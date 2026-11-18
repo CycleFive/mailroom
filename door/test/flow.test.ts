@@ -299,11 +299,24 @@ describe("failures of the core", () => {
     const r = await call(env(), "/authorize?response_type=code");
     expect(r.status).toBe(502);
     const html = await r.text();
-    expect(html).toContain("The mailroom is misconfigured. The operator can find the reason in the mailroom-core logs.");
+    expect(html).toContain("The mailroom is misconfigured. The operator can find the reason in the mailroom door&#39;s logs.");
     expect(html).not.toContain("secret-channel-123");
     const m = await call(env(), "/claude/mcp", { method: "POST", body: "{}" });
     expect(m.status).toBe(502);
     expect(await m.text()).not.toContain("secret-channel-123");
+  });
+
+  it("logs the core's reason when the agent list is unavailable, but never shows it", async () => {
+    const log = vi.mocked(console.log);
+    log.mockClear();
+    core.agentsFailure = { status: 500, message: "mailroom config: agents: must not be empty" };
+    const r = await call(env(), "/claude/mcp", { method: "POST", body: "{}" });
+    expect(r.status).toBe(502);
+    expect(await r.text()).not.toContain("must not be empty");
+    const lines = log.mock.calls.map((c) => String(c[0])).filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+    const line = lines.find((l) => l.event === "agents_unavailable");
+    expect(line.status).toBe(500);
+    expect(line.message).toContain("must not be empty");
   });
 
   for (const status of [500, 502]) {

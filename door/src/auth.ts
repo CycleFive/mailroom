@@ -144,7 +144,7 @@ function renderAuthError(e: unknown): Response {
 }
 
 /** Shown to visitors instead of the core's error text, which may quote channel IDs or repo names. */
-export const CORE_MISCONFIGURED = "The mailroom is misconfigured. The operator can find the reason in the mailroom-core logs.";
+export const CORE_MISCONFIGURED = "The mailroom is misconfigured. The operator can find the reason in the mailroom door's logs.";
 
 /** The `error` text of a `{"error": "..."}` answer, or empty. Goes to the log only, never to a page. */
 async function upstreamError(res: Response): Promise<string> {
