@@ -24,6 +24,15 @@ export class Feed extends WorkerEntrypoint {
   async fetch(request) {
     const { pathname } = new URL(request.url);
     switch (pathname) {
+      case "/signin/client":
+        return Response.json({ client_id: "424242" });
+      case "/signin": {
+        const body = await request.json().catch(() => ({}));
+        if (body.code === "good" && body.redirect_uri === "https://door/callback") {
+          return Response.json({ id: "77", username: "op" });
+        }
+        return Response.json({ error: "Discord did not return a token" }, { status: 502 });
+      }
       case "/identity":
         return Response.json({ id: "900", login: "bot", name: "Bot" });
       case "/api/channels/10000":

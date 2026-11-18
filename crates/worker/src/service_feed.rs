@@ -12,6 +12,11 @@ struct ErrorBody {
     error: Option<String>,
 }
 
+/// The `error` text of a Feed error body, if the body is one.
+pub(crate) fn error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<ErrorBody>(body).ok().and_then(|b| b.error)
+}
+
 /// Percent-encodes every byte outside the unreserved set.
 fn encode(text: &str) -> String {
     let mut out = String::new();
@@ -38,10 +43,7 @@ impl ServiceFeed {
             .await
             .map_err(|e| FeedError::Transport(e.to_string()))?;
         if status >= 400 {
-            let message = serde_json::from_str::<ErrorBody>(&body)
-                .ok()
-                .and_then(|b| b.error)
-                .unwrap_or_else(|| truncate(&body, 200, ""));
+            let message = error_message(&body).unwrap_or_else(|| truncate(&body, 200, ""));
             return Err(FeedError::Status { status, message });
         }
         Ok(body)

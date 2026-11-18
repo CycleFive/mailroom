@@ -62,7 +62,7 @@ tick() { curl -fsS --max-time 60 "$base/__scheduled?cron=*+*+*+*+*" >/dev/null |
 
 # 1. agents
 agents="$(curl -sS --max-time 20 "$base/agents" | jq -c '.agents' 2>&1)" || agents="(request failed)"
-[ "$agents" = '["alpha","beta"]' ] || fail "GET /agents gave $agents"
+[ "$agents" = '["alpha","beta","gamma"]' ] || fail "GET /agents gave $agents"
 
 # 2. first contact records nothing
 tick
@@ -101,5 +101,41 @@ mcp nobody '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' >/dev/null
 # 7. tools/list
 n="$(mcp alpha '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools | length')"
 [ "$n" = 3 ] || fail "tools/list gave $n tools"
+
+# 8. sign-in routes. signin_get/signin_post set $status and $resp (no subshell, so both survive).
+signin_get() {
+  local out
+  out="$(curl -sS --max-time 30 -w '\n%{http_code}' "$base/signin/client$1")"
+  status="${out##*$'\n'}"
+  resp="${out%$'\n'*}"
+}
+signin_post() { # BODY
+  local out
+  out="$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST "$base/signin" \
+    -H 'content-type: application/json' -d "$1")"
+  status="${out##*$'\n'}"
+  resp="${out%$'\n'*}"
+}
+
+signin_get '?agent=alpha'
+[ "$status" = 200 ] && [ "$(jq -r '.client_id' <<<"$resp")" = 424242 ] || fail "signin/client gave $status $resp"
+signin_post '{"agent":"alpha","code":"good","redirect_uri":"https://door/callback"}'
+[ "$status" = 200 ] && [ "$(jq -r '.username' <<<"$resp")" = op ] || fail "signin good gave $status $resp"
+signin_post '{"agent":"alpha","code":"bad","redirect_uri":"https://door/callback"}'
+[ "$status" = 502 ] && [ "$(jq -r '.error' <<<"$resp")" = "Discord did not return a token" ] || fail "signin bad code gave $status $resp"
+signin_get '?agent=nobody' >/dev/null
+[ "$status" = 404 ] || fail "signin/client unknown agent gave $status"
+signin_get '' >/dev/null
+[ "$status" = 404 ] || fail "signin/client without agent gave $status"
+signin_post '{"agent":"nobody","code":"good","redirect_uri":"https://door/callback"}'
+[ "$status" = 404 ] && [ "$(jq -r '.error' <<<"$resp")" = "unknown mailbox" ] || fail "signin unknown agent gave $status $resp"
+signin_post 'not json' >/dev/null
+[ "$status" = 400 ] || fail "signin non-JSON gave $status"
+signin_post '{"agent":"alpha"}' >/dev/null
+[ "$status" = 400 ] || fail "signin wrong shape gave $status"
+signin_get '?agent=gamma'
+[ "$status" = 500 ] && [[ "$resp" == *"is not bound"* ]] || fail "signin/client unbound gave $status $resp"
+signin_post '{"agent":"gamma","code":"good","redirect_uri":"https://door/callback"}'
+[ "$status" = 500 ] && [[ "$resp" == *"is not bound"* ]] || fail "signin unbound gave $status $resp"
 
 echo "smoke: ok"

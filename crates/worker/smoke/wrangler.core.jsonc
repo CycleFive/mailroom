@@ -16,9 +16,16 @@
     "MAILROOM": {
       "agents": {
         "alpha": {
+          "signin": "FEED",
           "sources": [{ "type": "discord", "broker": "FEED", "every_secs": 60, "channels": ["10000", "30000"] }]
         },
         "beta": {
+          "signin": "FEED",
+          "sources": [{ "type": "discord", "broker": "FEED", "every_secs": 60, "channels": ["20000"] }]
+        },
+        // TEST-ONLY: its signin names a binding that is deliberately absent from "services".
+        "gamma": {
+          "signin": "ABSENT_BROKER",
           "sources": [{ "type": "discord", "broker": "FEED", "every_secs": 60, "channels": ["20000"] }]
         }
       }

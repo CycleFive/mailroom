@@ -22,6 +22,8 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
+    /// The service binding of the Discord broker that signs this agent's users in.
+    pub signin: String,
     pub sources: Vec<SourceConfig>,
 }
 
@@ -148,6 +150,12 @@ impl Config {
                     "agent {name:?}: name must be 1-32 chars of a-z, 0-9, '-'"
                 )));
             }
+            if !is_binding_name(&agent.signin) {
+                return Err(ConfigError(format!(
+                    "agent {name:?}: signin: {:?} must be non-empty and only A-Z, 0-9, '_'",
+                    agent.signin
+                )));
+            }
             for (i, source) in agent.sources.iter().enumerate() {
                 validate_source(name, i, source)?;
             }
@@ -156,16 +164,20 @@ impl Config {
     }
 }
 
+/// A service binding name: non-empty, only `A-Z`, `0-9`, `_`.
+fn is_binding_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
 fn validate_source(agent: &str, index: usize, source: &SourceConfig) -> Result<(), ConfigError> {
     let at = format!("agent {agent:?} source {index}");
     let fail = |field: &str, msg: String| Err(ConfigError(format!("{at}: {field}: {msg}")));
 
     let broker = source.broker();
-    if broker.is_empty()
-        || !broker
-            .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-    {
+    if !is_binding_name(broker) {
         return fail(
             "broker",
             format!("{broker:?} must be non-empty and only A-Z, 0-9, '_'"),

@@ -4,6 +4,7 @@ const GOOD: &str = r#"{
   "retain_days": 30,
   "agents": {
     "claude": {
+      "signin": "DISCORD_CLAUDE",
       "sources": [
         { "type": "discord", "broker": "DISCORD_CLAUDE", "every_secs": 120,
           "channels": ["1566796119839875999"],
@@ -17,14 +18,14 @@ const GOOD: &str = r#"{
           "skip_self": true, "keep": "tagged", "rules": [] }
       ]
     },
-    "manus": { "sources": [
+    "manus": { "signin": "DISCORD_MANUS", "sources": [
       { "type": "discord", "broker": "DISCORD_MANUS", "channels": ["1566796119839875999"] }
     ] }
   }
 }"#;
 
 fn with_source(src: &str) -> String {
-    format!(r#"{{"agents":{{"claude":{{"sources":[{src}]}}}}}}"#)
+    format!(r#"{{"agents":{{"claude":{{"signin":"DISCORD_CLAUDE","sources":[{src}]}}}}}}"#)
 }
 
 fn err(json: &str) -> String {
@@ -91,7 +92,7 @@ fn rejects_unknown_field() {
 
 #[test]
 fn rejects_bad_agent_name() {
-    let e = err(r#"{"agents":{"Claude":{"sources":[]}}}"#);
+    let e = err(r#"{"agents":{"Claude":{"signin":"DISCORD_CLAUDE","sources":[]}}}"#);
     assert!(e.contains("Claude"), "{e}");
 }
 
@@ -165,4 +166,28 @@ fn then_serializes_as_spec() {
         serde_json::to_string(&Then::Tag("x".into())).unwrap(),
         r#"{"tag":"x"}"#
     );
+}
+
+#[test]
+fn parses_signin() {
+    let c = Config::parse(GOOD).unwrap();
+    assert_eq!(c.agents["claude"].signin, "DISCORD_CLAUDE");
+    assert_eq!(c.agents["manus"].signin, "DISCORD_MANUS");
+}
+
+#[test]
+fn rejects_missing_signin() {
+    let e =
+        err(r#"{"agents":{"claude":{"sources":[{"type":"discord","broker":"B","channels":["12345"]}]}}}"#);
+    assert!(e.contains("signin"), "{e}");
+}
+
+#[test]
+fn rejects_bad_signin() {
+    for signin in ["", "discord-claude"] {
+        let e = err(&format!(
+            r#"{{"agents":{{"claude":{{"signin":"{signin}","sources":[{{"type":"discord","broker":"B","channels":["12345"]}}]}}}}}}"#
+        ));
+        assert!(e.contains("claude") && e.contains("signin"), "{e}");
+    }
 }
