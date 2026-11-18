@@ -40,9 +40,11 @@ export function resetAgentCache(): void {
 async function getAgents(env: Env, fresh = false): Promise<string[]> {
   if (!fresh && agentCache && Date.now() - agentCache.at < AGENTS_TTL_MS) return agentCache.agents;
   const res = await env.MAILROOM.fetch("https://mailroom-core/agents");
-  const body = res.status === 200 ? ((await res.json().catch(() => null)) as { agents?: unknown } | null) : null;
-  if (!body || !Array.isArray(body.agents) || !body.agents.every((a) => typeof a === "string")) {
-    console.log(JSON.stringify({ event: "agents_unavailable", status: res.status }));
+  const body = (await res.json().catch(() => null)) as { agents?: unknown; error?: unknown } | null;
+  if (res.status !== 200 || !body || !Array.isArray(body.agents) || !body.agents.every((a) => typeof a === "string")) {
+    // The core's reason goes to the log only, never to a page: it may quote channel IDs or repo names.
+    const message = typeof body?.error === "string" ? body.error : res.status === 200 ? "unreadable agent list" : "";
+    console.log(JSON.stringify({ event: "agents_unavailable", status: res.status, message }));
     throw new CoreUnavailable();
   }
   const agents = (body.agents as string[]).filter((a) => AGENT_NAME.test(a));
