@@ -18,14 +18,12 @@
     }
   ],
   "services": [
-    // The mailbox logic. It has no public URL; this binding is the only way in.
-    { "binding": "MAILROOM", "service": "mailroom-core" },
-    // The discord-broker Worker's Feed entrypoint, which holds the Discord client secret
-    // and does the Sign in with Discord code exchange for us.
-    { "binding": "SIGNIN", "service": "discord-broker", "entrypoint": "Feed" }
+    // The mailbox logic. It has no public URL; this binding is the only way in. It also does
+    // each agent's Sign in with Discord through that agent's own broker.
+    { "binding": "MAILROOM", "service": "mailroom-core" }
   ],
   "vars": {
-    // Public origin of this Worker, no trailing slash. The MCP URL is PUBLIC_URL + "/mcp".
+    // Public origin of this Worker, no trailing slash. The MCP URL of an agent is PUBLIC_URL + "/<agent>/mcp".
     "PUBLIC_URL": "https://mailroom.<subdomain>.workers.dev",
     // Who may sign in: YOUR numeric Discord user ID (Developer Mode -> right-click yourself -> Copy User ID).
     "ALLOWED_DISCORD_USERS": "<your-discord-user-id>",
@@ -34,7 +32,7 @@
     // Optional: Origins accepted when a request carries an Origin header.
     "ALLOWED_ORIGINS": ""
   },
-  // This Worker holds no secrets: the Discord client secret stays in discord-broker.
+  // This Worker holds no secrets: the Discord client secrets stay in the brokers.
   "observability": {
     "enabled": true
   }
