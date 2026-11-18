@@ -601,3 +601,36 @@ fn each_list_has_its_own_gap_name() {
     names.sort();
     assert_eq!(names, ["issues", "pulls", "review_comments"]);
 }
+
+const PR_FIELD: &str = r#","pull_request":{"url":"x"}"#;
+
+#[test]
+fn issue_list_full_of_pull_requests_is_no_gap() {
+    let f = feed();
+    let mut st = state();
+    st.last_issue_number = 0;
+    st.last_pr_number = 60;
+    f.on(ISSUES, &full(11, |n| issue(n, "a", PR_FIELD)));
+    f.on(PULLS, &full(11, |n| pull(n, "a", "2026-11-18T09:00:00Z", "")));
+    let p = poll(&f, Some(st));
+    let ids: Vec<_> = gaps(&p).iter().map(|g| g.id.clone()).collect();
+    assert!(ids.is_empty(), "{ids:?}");
+}
+
+#[test]
+fn mixed_issue_list_above_both_watermarks_is_an_issues_gap() {
+    let f = feed();
+    let mut st = state();
+    st.last_issue_number = 5;
+    st.last_pr_number = 60;
+    f.on(
+        ISSUES,
+        &full(61, |n| issue(n, "a", if n % 2 == 0 { PR_FIELD } else { "" })),
+    );
+    let p = poll(&f, Some(st));
+    let issue_gaps: Vec<_> = gaps(&p)
+        .into_iter()
+        .filter(|g| g.id.contains(":issues:"))
+        .collect();
+    assert_eq!(issue_gaps.len(), 1);
+}

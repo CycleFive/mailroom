@@ -299,9 +299,15 @@ pub async fn poll_repo(
 
     let mut records = Vec::new();
     for (list, full_and_new) in [
+        // The raw list mixes issues and pull requests, which share one number space but
+        // have separate watermarks, so it is judged against the larger of the two.
         (
             "issues",
-            overflowed(issues_len, issue_numbers.iter().copied(), prev.last_issue_number),
+            overflowed(
+                issues_len,
+                issue_numbers.iter().copied(),
+                prev.last_issue_number.max(prev.last_pr_number),
+            ),
         ),
         (
             "pulls",

@@ -237,7 +237,10 @@ export async function handleCallback(request: Request, env: Env, oauth: OAuthHel
 
   // The mailbox was valid at consent time; make sure it still is.
   const agents = await fetchAgents(env);
-  if (!agents.ok) return errorPage(CORE_MISCONFIGURED, 502);
+  if (!agents.ok) {
+    console.log(JSON.stringify({ event: "agents_unavailable", message: agents.message }));
+    return errorPage(CORE_MISCONFIGURED, 502);
+  }
   if (!agents.agents.includes(data.agent)) {
     console.log(JSON.stringify({ event: "agent_gone", agent: data.agent }));
     return errorPage(`The mailbox "${data.agent}" is no longer configured. Start again and pick another.`, 400);
