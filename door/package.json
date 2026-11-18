@@ -1,0 +1,23 @@
+{
+  "name": "mailroom",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Public door for mailroom: OAuth sign-in with a mailbox picker, forwarding MCP to mailroom-core",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261104.1",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0",
+    "wrangler": "^4.157.0"
+  }
+}
