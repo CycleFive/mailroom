@@ -14,3 +14,12 @@ pub fn iso(epoch_secs: i64) -> String {
 pub fn epoch(iso: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(iso).ok().map(|d| d.timestamp())
 }
+
+/// How early a target may be polled. The cron fires about every 60 s with jitter; without
+/// slack a 120 s target would be polled every 180 s.
+pub const DUE_SLACK_SECS: i64 = 30;
+
+/// Whether a target last attempted at `last_attempt` (epoch seconds, 0 = never) is due at `now`.
+pub fn due(last_attempt: i64, every_secs: u32, now: i64) -> bool {
+    last_attempt == 0 || now - last_attempt + DUE_SLACK_SECS >= i64::from(every_secs)
+}

@@ -9,7 +9,7 @@ use mailroom_logic::mcp::{
     ReadMailArgs, ReadMailResult, SourceInfo, TargetInfo, ToolError,
 };
 use mailroom_logic::record::NewRecord;
-use mailroom_logic::time::iso;
+use mailroom_logic::time::{self, iso};
 use mailroom_logic::{discord, filter, github, VERSION};
 use serde::{Deserialize, Serialize};
 use worker::*;
@@ -240,7 +240,7 @@ fn is_due(sql: &SqlStorage, target: &str, every_secs: u32, now: i64, force: bool
     let status: Option<TargetStatus> = store::get_json(sql, &status_key(target))?;
     Ok(match status {
         None => true,
-        Some(s) => s.last_attempt == 0 || now - s.last_attempt >= i64::from(every_secs),
+        Some(s) => time::due(s.last_attempt, every_secs, now),
     })
 }
 
@@ -291,8 +291,10 @@ impl Mailbox {
         agent: &str,
     ) -> Result<()> {
         let force = force_due(&self.env);
+        // One timestamp for the whole tick: it is every target's `last_attempt`, so the next
+        // tick's due check measures from the same point in the cron cycle.
+        let now = now_secs();
         for source in &agent_config.sources {
-            let now = now_secs();
             let keys = source.target_keys();
             let mut due = Vec::new();
             for key in &keys {
@@ -326,7 +328,6 @@ impl Mailbox {
                     continue;
                 }
                 let started = Date::now().as_millis();
-                let now = now_secs();
                 let outcome = self.poll_target(sql, &feed, &me, source, index, key, now).await;
                 let ms = elapsed_ms(started);
                 match outcome {
