@@ -32,8 +32,8 @@ fn run_rules(mut record: NewRecord, rules: &[Rule]) -> Option<NewRecord> {
 /// Empty lists are "no condition"; a non-empty list matches if any element does;
 /// all non-empty conditions must match.
 pub fn matches(when: &When, record: &NewRecord) -> bool {
-    let actor_is =
-        |a: &String| a.eq_ignore_ascii_case(&record.actor) || a.to_lowercase() == record.actor.to_lowercase();
+    let actor = record.actor.to_lowercase();
+    let actor_is = |a: &String| a.to_lowercase() == actor;
     (when.kind.is_empty() || when.kind.contains(&record.kind))
         && (when.actor.is_empty() || when.actor.iter().any(actor_is))
         && (when.actor_not.is_empty() || !when.actor_not.iter().any(actor_is))
