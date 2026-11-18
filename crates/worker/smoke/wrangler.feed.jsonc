@@ -1,0 +1,5 @@
+{
+  "name": "mailroom-smoke-feed",
+  "main": "feed.js",
+  "compatibility_date": "2026-10-01"
+}

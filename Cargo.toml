@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/logic"]
+members = ["crates/logic", "crates/worker"]
 
 [profile.release]
 opt-level = "s"
