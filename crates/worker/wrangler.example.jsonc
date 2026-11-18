@@ -32,6 +32,8 @@
       "agents": {
         // Agent names: 1-32 chars of a-z, 0-9, '-'.
         "claude": {
+          // Service binding of the Discord broker that signs this agent's users in (required).
+          "signin": "DISCORD_CLAUDE",
           "sources": [
             {
               "type": "discord",
@@ -59,6 +61,8 @@
           ]
         },
         "manus": {
+          // Service binding of the Discord broker that signs this agent's users in (required).
+          "signin": "DISCORD_MANUS",
           "sources": [
             {
               "type": "discord",
