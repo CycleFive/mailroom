@@ -145,11 +145,18 @@ describe("mailbox picker", () => {
     expect(await res.text()).toContain("Pick a mailbox.");
   });
 
-  it("shows the core's config error on the consent page", async () => {
+  it("shows a generic message when the core is misconfigured", async () => {
     core.agentsFailure = { status: 500, message: "mailroom config: x" };
     const s = (await startAuthorize(env())) as any;
     expect(s.status).toBe(502);
-    expect(s.html).toContain("mailroom config: x");
+    expect(s.html).toContain("The mailroom is misconfigured. The operator can find the reason in the mailroom-core logs.");
+  });
+
+  it("does not show the core's error text on the page", async () => {
+    core.agentsFailure = { status: 500, message: "mailroom config: secret-channel-123" };
+    const s = (await startAuthorize(env())) as any;
+    expect(s.html).not.toContain("mailroom config");
+    expect(s.html).not.toContain("secret-channel-123");
   });
 });
 

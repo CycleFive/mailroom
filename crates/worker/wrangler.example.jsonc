@@ -7,6 +7,8 @@
   "main": "build/index.js",
   "compatibility_date": "2026-10-01",
   "workers_dev": false,
+  // The core trusts x-mailroom-agent, so it must have neither a workers.dev URL nor preview URLs.
+  "preview_urls": false,
   "build": { "command": "worker-build --release" },
   // One SQLite-backed Durable Object per agent holds that agent's inbox.
   "durable_objects": { "bindings": [{ "name": "MAILBOX", "class_name": "Mailbox" }] },

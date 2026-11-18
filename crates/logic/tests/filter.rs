@@ -131,3 +131,26 @@ fn order_is_preserved() {
     let actors: Vec<_> = out.iter().map(|r| r.actor.as_str()).collect();
     assert_eq!(actors, ["a", "b", "c"]);
 }
+
+#[test]
+fn gap_record_bypasses_rules_and_keep() {
+    let gap = rec(Kind::Gap, "someone", "", &[]);
+    let rules = [Rule {
+        when: When {
+            kind: vec![Kind::Gap],
+            ..When::default()
+        },
+        then: Then::Drop,
+    }];
+    let out = apply(vec![gap.clone()], &rules, Keep::Tagged);
+    assert_eq!(out, vec![gap.clone()]);
+    let by_actor = [Rule {
+        when: When {
+            actor: vec!["someone".into()],
+            ..When::default()
+        },
+        then: Then::Tag("x".into()),
+    }];
+    // untouched: not even tagged by a rule
+    assert_eq!(apply(vec![gap.clone()], &by_actor, Keep::All), vec![gap]);
+}

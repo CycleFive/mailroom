@@ -123,6 +123,9 @@ async function upstreamError(res: Response, who: string): Promise<string> {
   return typeof body?.error === "string" && body.error ? body.error : `${who} answered ${res.status}.`;
 }
 
+/** Shown to visitors instead of the core's error text, which may quote channel IDs or repo names. */
+const CORE_MISCONFIGURED = "The mailroom is misconfigured. The operator can find the reason in the mailroom-core logs.";
+
 type Agents = { ok: true; agents: string[] } | { ok: false; message: string };
 
 /** The configured agent names, from mailroom-core. */
@@ -143,7 +146,7 @@ export async function handleAuthorize(request: Request, env: Env, oauth: OAuthHe
       const agents = await fetchAgents(env);
       if (!agents.ok) {
         console.log(JSON.stringify({ event: "agents_unavailable", message: agents.message }));
-        return errorPage(agents.message, 502);
+        return errorPage(CORE_MISCONFIGURED, 502);
       }
       const authReq = await oauth.parseAuthRequest(request);
       const details = await oauth.describeConsent(authReq);
@@ -162,7 +165,7 @@ export async function handleAuthorize(request: Request, env: Env, oauth: OAuthHe
     const agents = await fetchAgents(env);
     if (!agents.ok) {
       console.log(JSON.stringify({ event: "agents_unavailable", message: agents.message }));
-      return errorPage(agents.message, 502);
+      return errorPage(CORE_MISCONFIGURED, 502);
     }
     const agent = String(form.get("agent") ?? "");
     if (!agents.agents.includes(agent)) return errorPage("Pick a mailbox.", 400);
@@ -234,7 +237,7 @@ export async function handleCallback(request: Request, env: Env, oauth: OAuthHel
 
   // The mailbox was valid at consent time; make sure it still is.
   const agents = await fetchAgents(env);
-  if (!agents.ok) return errorPage(agents.message, 502);
+  if (!agents.ok) return errorPage(CORE_MISCONFIGURED, 502);
   if (!agents.agents.includes(data.agent)) {
     console.log(JSON.stringify({ event: "agent_gone", agent: data.agent }));
     return errorPage(`The mailbox "${data.agent}" is no longer configured. Start again and pick another.`, 400);
