@@ -228,6 +228,9 @@ Mechanical only. For each new upstream item, in order:
 4. **Keep.** `"all"` keeps every surviving record; `"tagged"` keeps only records
    with at least one tag.
 
+A `kind: "gap"` record bypasses the rules and `keep`: it is the only sign that
+items were skipped, so it is always kept, untouched.
+
 No regular expressions (my call: substring matching covers the stated need and
 keeps the wasm small).
 
@@ -280,7 +283,8 @@ emits nothing. History is never replayed.
   `kind: "reaction"` record per reactor not seen before (`id`
   `dc:react:<message>:<emoji>:<user>`, `body` the emoji, `url` the message's jump
   link). Removals are ignored. A reaction on a message older than the window is
-  missed.
+  missed. The count compared is `count_details.normal` when Discord sends it, and an
+  emoji whose stored reactors already number 100 (the fetch cap) is not fetched again.
 - Edits and deletions are ignored.
 
 **GitHub repo.** A port of Muse's broker: issues, pulls, issue comments and review
@@ -293,6 +297,12 @@ the unique record `id` absorbs the overlap. One addition (my call): `GET /repos/
 watermark, keeping `assigned`, `labeled`, `review_requested`, `closed`, `merged`
 and `reopened` as `kind: "event"` records. Without it, a review label or an
 assignment added *after* a PR was opened would never produce a record.
+
+Overflow: each list is read 50 items per poll. If a list comes back full and every
+item is above its watermark, one `kind: "gap"` record is appended for that repo and
+list (`id` `gh:gap:<owner>/<repo>:<list>:<epoch>`, not on first contact). Reviews of a
+pull request are paged 100 at a time, oldest first, up to 10 pages; a full 10th page
+yields a `gap` record for that PR. A failed page fails the whole poll.
 
 State per target is one typed struct stored as JSON.
 

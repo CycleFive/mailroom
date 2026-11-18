@@ -238,9 +238,12 @@ webhook.
 - **GitHub.** Issues, pulls, issue comments, review comments, reviews and issue events.
   Reviews are found by their submission time since the last check. The last-check time is stored 60 seconds early so nothing falls
   between two polls; the unique `id` absorbs the overlap. Workflow runs are not recorded.
-- **Limits.** Each GitHub list is read 50 items per poll, and there is no `gap` record
-  for GitHub: if more than 50 new items arrive between two polls, the extra ones are
-  missed silently. Discord reactor lists are capped at 100 per message.
+- **Limits.** Each GitHub list is read 50 items per poll. If a list comes back full and
+  every item on it is new, one `gap` record names the list and repo (items may have been
+  skipped; look at the repo directly). Reviews are read 100 per page, up to 10 pages per
+  pull request, with a `gap` record if that is not enough. Discord reactor lists are
+  capped at 100 per message, and reactions from burst reactors are not recorded.
+  A `gap` record is never dropped by `rules` or `keep`.
 - **Failures.** A failed target changes nothing except its status (time and error text),
   and the target is retried when it is next due (after its own `every_secs`), from the
   same position. Targets fail independently. If a
@@ -282,8 +285,8 @@ npx wrangler@4 deploy
 This crate has no `package.json`, so `npx wrangler@4` fetches Wrangler on the fly; the
 `@4` pins the major version.
 
-The Worker is named `mailroom-core`. It has no public URL (`workers_dev` is false and
-there are no routes); the door reaches it through a service binding. It also runs a cron
+The Worker is named `mailroom-core`. It has no public URL (`workers_dev` and `preview_urls` are
+both false, and there are no routes); the door reaches it through a service binding. It also runs a cron
 trigger every minute.
 
 ### 3. Deploy the door
@@ -348,7 +351,7 @@ it, so the page shows the agent name prominently and `mailbox_info` returns it. 
 | You see | Usually |
 | --- | --- |
 | `mailbox_info` shows a `last_error` on a target | That target's last poll failed; the position has not moved and the target is retried when it is next due (after its own `every_secs`). The text says whether the broker, the allowlist or Discord/GitHub refused. Discord sometimes answers Workers with a 429 because of other traffic on a shared IP; it usually clears. |
-| HTTP 500 `mailroom config: ...` on every call, or an error page with that message on the consent page (the door shows it as 502) | The `MAILROOM` var is invalid; the message names the agent, source and field. Fix it and deploy `mailroom-core`. |
+| HTTP 500 `mailroom config: ...` on every call, or an error page saying "The mailroom is misconfigured" on the consent page (the door shows it as 502) | The `MAILROOM` var is invalid. The page is generic on purpose; the door logs the reason as `agents_unavailable`, and the call's body names the agent, source and field. Fix it and deploy `mailroom-core`. |
 | "Pick a mailbox." | The mailbox you posted is not in the current config. Go back and pick. |
 | `The mailbox "<name>" is no longer configured.` | The agent was removed from config between your approval and the Discord sign-in. Start again and pick another. |
 | Discord says "Invalid OAuth2 redirect_uri" | The Redirect on the `SIGNIN` broker's application is not exactly `<PUBLIC_URL>/callback`. |

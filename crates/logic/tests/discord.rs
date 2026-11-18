@@ -307,3 +307,35 @@ fn jump_url_shape() {
     let p = poll(&f, &opts(true, true), Some(state(10)));
     assert_eq!(p.records[0].url, "https://discord.com/channels/777/555/30");
 }
+
+#[test]
+fn burst_reactors_do_not_trigger_a_reactor_fetch() {
+    let f = feed_with(&with_reaction_json(
+        r#"{"count":3,"count_details":{"normal":2,"burst":1},"emoji":{"id":null,"name":"✅"}}"#,
+    ));
+    let p = poll(
+        &f,
+        &opts(true, true),
+        Some(state_with_reactors("✅", &["1", "2"])),
+    );
+    assert!(p.records.is_empty());
+    assert!(f.calls().iter().all(|c| !c.contains("/reactions/")));
+    assert_eq!(p.state.reactions["30"]["✅"], ["1", "2"]);
+}
+
+#[test]
+fn reactors_at_the_fetch_cap_are_not_refetched() {
+    let f = feed_with(&with_reaction(CHECK, 150));
+    let ids: Vec<String> = (1..=100).map(|i| i.to_string()).collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let p = poll(&f, &opts(true, true), Some(state_with_reactors("✅", &refs)));
+    assert!(p.records.is_empty());
+    assert!(f.calls().iter().all(|c| !c.contains("/reactions/")));
+    assert_eq!(p.state.reactions["30"]["✅"].len(), 100);
+}
+
+fn with_reaction_json(reaction: &str) -> String {
+    format!(
+        r#"[{{"id":"30","type":0,"timestamp":"t","content":"x","author":{{"id":"1","username":"u"}},"reactions":[{reaction}]}}]"#
+    )
+}

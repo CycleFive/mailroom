@@ -12,6 +12,9 @@ const PAGE: usize = 50;
 const MAX_PAGES: usize = 5;
 const PAGE_LIMIT: &str = "50";
 const BODY_MAX: usize = 2000;
+/// One reactor fetch returns at most this many users; a list at the cap is not fetched again.
+const REACTOR_CAP: usize = 100;
+const REACTOR_LIMIT: &str = "100";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DiscordState {
@@ -97,7 +100,15 @@ struct Embed {
 struct ReactionSummary {
     #[serde(default)]
     count: usize,
+    #[serde(default)]
+    count_details: Option<CountDetails>,
     emoji: Emoji,
+}
+
+#[derive(Deserialize)]
+struct CountDetails {
+    #[serde(default)]
+    normal: usize,
 }
 
 #[derive(Deserialize)]
@@ -163,7 +174,7 @@ async fn fetch_reactors(
         "/channels/{channel_id}/messages/{message_id}/reactions/{}",
         encode(key)
     );
-    Ok(get_json(feed, &path, &[("limit", "100")]).await?)
+    Ok(get_json(feed, &path, &[("limit", REACTOR_LIMIT)]).await?)
 }
 
 fn jump_url(guild_id: &str, channel_id: &str, message_id: &str) -> String {
@@ -234,7 +245,7 @@ pub async fn poll_channel(
                     .map(|r| Seen {
                         key: r.emoji.key(),
                         body: r.emoji.body(),
-                        count: r.count,
+                        count: r.count_details.as_ref().map_or(r.count, |d| d.normal),
                     })
                     .collect(),
             )
@@ -346,7 +357,7 @@ pub async fn poll_channel(
                     .and_then(|m| m.get(key))
                     .cloned()
                     .unwrap_or_default();
-                let list = if *count > stored.len() {
+                let list = if *count > stored.len() && stored.len() < REACTOR_CAP {
                     let users = fetch_reactors(feed, channel_id, message_id, key).await?;
                     for u in &users {
                         if stored.contains(&u.id) || (opts.skip_self && u.id == me.id) {

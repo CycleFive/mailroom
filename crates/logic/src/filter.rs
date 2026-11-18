@@ -1,14 +1,20 @@
 //! Mechanical rule engine: decides which records are kept and which extra tags they get.
 
 use crate::config::{Keep, Rule, Then, When};
-use crate::record::NewRecord;
+use crate::record::{Kind, NewRecord};
 
 /// Rules first to last, then `keep`. Built-in tags are already on the records.
+/// A `gap` record is the only sign that items were skipped, so it bypasses
+/// every rule and `keep`, and is always kept untouched.
 pub fn apply(records: Vec<NewRecord>, rules: &[Rule], keep: Keep) -> Vec<NewRecord> {
     records
         .into_iter()
-        .filter_map(|record| run_rules(record, rules))
-        .filter(|record| keep == Keep::All || !record.tags.is_empty())
+        .filter_map(|record| {
+            if record.kind == Kind::Gap {
+                return Some(record);
+            }
+            run_rules(record, rules).filter(|record| keep == Keep::All || !record.tags.is_empty())
+        })
         .collect()
 }
 

@@ -8,6 +8,12 @@ use crate::record::{truncate, Kind, NewRecord, Src};
 use crate::time::{epoch, iso};
 
 const PER_PAGE: &str = "50";
+/// A list response with this many items may have more behind it.
+const PER_PAGE_N: usize = 50;
+const REVIEWS_PER_PAGE: &str = "100";
+const REVIEWS_PER_PAGE_N: usize = 100;
+/// Reviews are paged (oldest first) at most this many times per pull request.
+const REVIEWS_MAX_PAGES: usize = 10;
 const BODY_MAX: usize = 600;
 const BODY_SUFFIX: &str = " [...]";
 /// `last_check_at` is stored this many seconds early so nothing falls between polls.
@@ -178,6 +184,29 @@ impl Ctx<'_> {
     }
 }
 
+/// A `gap` record: `list` of `repo` may have skipped items.
+fn gap_record(repo: &str, list: &str, now_epoch: i64) -> NewRecord {
+    NewRecord {
+        src: Src::Github,
+        kind: Kind::Gap,
+        id: format!("gh:gap:{repo}:{list}:{now_epoch}"),
+        ts: iso(now_epoch),
+        actor: String::new(),
+        reference: repo.to_string(),
+        title: format!("{list} of {repo} may have skipped items"),
+        body: format!(
+            "The {list} list of {repo} grew past what one poll can read, so items may be missing. Look at the repo directly."
+        ),
+        url: format!("https://github.com/{repo}"),
+        tags: Vec::new(),
+    }
+}
+
+/// Whether a list is full and every item is newer than its watermark.
+fn overflowed(len: usize, ids: impl Iterator<Item = u64>, watermark: u64) -> bool {
+    len == PER_PAGE_N && ids.into_iter().all(|id| id > watermark)
+}
+
 pub async fn poll_repo(
     feed: &impl FeedClient,
     me: &Identity,
@@ -224,6 +253,9 @@ pub async fn poll_repo(
     let events: Vec<Event> =
         get_json(feed, &format!("{base}/issues/events"), &[("per_page", PER_PAGE)]).await?;
 
+    // Overflow is judged on the raw list, which includes pull requests.
+    let issues_len = issues.len();
+    let issue_numbers: Vec<u64> = issues.iter().map(|i| i.number).collect();
     // Pull requests also appear in the issue list; they are handled from `pulls`.
     let issues: Vec<&Item> = issues.iter().filter(|i| i.pull_request.is_none()).collect();
 
@@ -266,6 +298,40 @@ pub async fn poll_repo(
     };
 
     let mut records = Vec::new();
+    for (list, full_and_new) in [
+        (
+            "issues",
+            overflowed(issues_len, issue_numbers.iter().copied(), prev.last_issue_number),
+        ),
+        (
+            "pulls",
+            overflowed(pulls.len(), pulls.iter().map(|p| p.number), prev.last_pr_number),
+        ),
+        (
+            "issue_comments",
+            overflowed(
+                issue_comments.len(),
+                issue_comments.iter().map(|c| c.id),
+                prev.last_issue_comment_id,
+            ),
+        ),
+        (
+            "review_comments",
+            overflowed(
+                review_comments.len(),
+                review_comments.iter().map(|c| c.id),
+                prev.last_review_comment_id,
+            ),
+        ),
+        (
+            "events",
+            overflowed(events.len(), events.iter().map(|e| e.id), prev.last_event_id),
+        ),
+    ] {
+        if full_and_new {
+            records.push(gap_record(repo, list, now_epoch));
+        }
+    }
     let skip = |login: &str| opts.skip_self && login == ctx.bot;
 
     for i in issues.iter().filter(|i| i.number > prev.last_issue_number) {
@@ -372,12 +438,23 @@ pub async fn poll_repo(
     }
 
     for p in pulls.iter().filter(|p| newer(&p.updated_at, &prev.last_check_at)) {
-        let reviews: Vec<Review> = get_json(
-            feed,
-            &format!("{base}/pulls/{}/reviews", p.number),
-            &[("per_page", PER_PAGE)],
-        )
-        .await?;
+        let mut reviews: Vec<Review> = Vec::new();
+        for page in 1..=REVIEWS_MAX_PAGES {
+            let batch: Vec<Review> = get_json(
+                feed,
+                &format!("{base}/pulls/{}/reviews", p.number),
+                &[("per_page", REVIEWS_PER_PAGE), ("page", &page.to_string())],
+            )
+            .await?;
+            let short = batch.len() < REVIEWS_PER_PAGE_N;
+            reviews.extend(batch);
+            if short {
+                break;
+            }
+            if page == REVIEWS_MAX_PAGES {
+                records.push(gap_record(repo, &format!("reviews:{}", p.number), now_epoch));
+            }
+        }
         for v in &reviews {
             let Some(submitted) = v.submitted_at.as_deref() else {
                 continue;

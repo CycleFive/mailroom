@@ -16,6 +16,7 @@ const ISSUES: &str = "/repos/CycleFive/kharon/issues?state=all&sort=updated&dire
 const PULLS: &str = "/repos/CycleFive/kharon/pulls?state=all&sort=updated&direction=desc&per_page=50";
 const ICOMMENTS: &str = "/repos/CycleFive/kharon/issues/comments?sort=created&direction=desc&per_page=50";
 const RCOMMENTS: &str = "/repos/CycleFive/kharon/pulls/comments?sort=created&direction=desc&per_page=50";
+const REVIEWS_P1: &str = "/repos/CycleFive/kharon/pulls/4/reviews?per_page=100&page=1";
 const EVENTS: &str = "/repos/CycleFive/kharon/issues/events?per_page=50";
 
 fn me() -> Identity {
@@ -254,10 +255,7 @@ fn with_reviews(f: &FakeFeed, reviews: &[String]) {
         PULLS,
         &list(&[pull(4, "claudeduet[bot]", "2026-11-18T11:00:00Z", "")]),
     );
-    f.on(
-        "/repos/CycleFive/kharon/pulls/4/reviews?per_page=50",
-        &list(reviews),
-    );
+    f.on(REVIEWS_P1, &list(reviews));
 }
 
 #[test]
@@ -299,10 +297,10 @@ fn reviews_fetched_only_for_pulls_updated_since_last_check() {
             pull(3, "a", "2026-11-18T09:00:00Z", ""),
         ]),
     );
-    f.on("/repos/CycleFive/kharon/pulls/4/reviews?per_page=50", "[]");
+    f.on(REVIEWS_P1, "[]");
     poll(&f, Some(state()));
     let reviews: Vec<_> = f.calls().into_iter().filter(|c| c.contains("/reviews")).collect();
-    assert_eq!(reviews, ["/repos/CycleFive/kharon/pulls/4/reviews?per_page=50"]);
+    assert_eq!(reviews, [REVIEWS_P1]);
 }
 
 #[test]
@@ -466,4 +464,140 @@ fn records_are_sorted_by_ts() {
             "gh:CycleFive/kharon:issue_comment:101",
         ]
     );
+}
+
+fn reviews_page(_n: u64, first_id: u64, count: u64, submitted: &str) -> String {
+    list(
+        &(first_id..first_id + count)
+            .map(|id| review(id, "alice", "COMMENTED", Some(submitted)))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn page_path(n: u64) -> String {
+    format!("/repos/CycleFive/kharon/pulls/4/reviews?per_page=100&page={n}")
+}
+
+fn gaps(p: &Poll<GithubState>) -> Vec<&NewRecord> {
+    p.records.iter().filter(|r| r.kind == Kind::Gap).collect()
+}
+
+#[test]
+fn review_past_the_hundredth_is_recorded() {
+    let f = feed();
+    f.on(PULLS, &list(&[pull(4, "a", "2026-11-18T11:00:00Z", "")]));
+    f.on(&page_path(1), &reviews_page(1, 1, 100, "2026-11-18T09:00:00Z"));
+    let mut page2: Vec<String> = (101..120)
+        .map(|id| review(id, "alice", "COMMENTED", Some("2026-11-18T09:00:00Z")))
+        .collect();
+    page2.push(review(120, "bob", "APPROVED", Some("2026-11-18T11:30:00Z")));
+    f.on(&page_path(2), &list(&page2));
+    let p = poll(&f, Some(state()));
+    let reviews: Vec<_> = p.records.iter().filter(|r| r.kind == Kind::Review).collect();
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0].id, "gh:CycleFive/kharon:review:120");
+    assert!(gaps(&p).is_empty());
+    assert_eq!(f.calls().iter().filter(|c| c.contains("/reviews")).count(), 2);
+}
+
+#[test]
+fn ten_full_review_pages_yield_a_gap_record() {
+    let f = feed();
+    f.on(PULLS, &list(&[pull(4, "a", "2026-11-18T11:00:00Z", "")]));
+    for n in 1..=10 {
+        f.on(
+            &page_path(n),
+            &reviews_page(n, (n - 1) * 100 + 1, 100, "2026-11-18T09:00:00Z"),
+        );
+    }
+    let p = poll(&f, Some(state()));
+    let g = gaps(&p);
+    assert_eq!(g.len(), 1);
+    assert_eq!(g[0].id, format!("gh:gap:{R}:reviews:4:{}", epoch(NOW).unwrap()));
+    assert_eq!(g[0].reference, R);
+    assert_eq!(g[0].url, "https://github.com/CycleFive/kharon");
+    assert_eq!(f.calls().iter().filter(|c| c.contains("/reviews")).count(), 10);
+}
+
+#[test]
+fn a_failing_reviews_page_fails_the_poll() {
+    let f = feed();
+    f.on(PULLS, &list(&[pull(4, "a", "2026-11-18T11:00:00Z", "")]));
+    f.on(&page_path(1), &reviews_page(1, 1, 100, "2026-11-18T09:00:00Z"));
+    f.fail(&page_path(2), 500);
+    assert!(try_poll(&f, &opts(None, true), Some(state())).is_err());
+}
+
+fn full<F: Fn(u64) -> String>(first: u64, make: F) -> String {
+    list(&(first..first + 50).map(make).collect::<Vec<_>>())
+}
+
+#[test]
+fn full_all_new_list_yields_one_gap_naming_it() {
+    let f = feed();
+    // issue comments ids 101..=150 are all above the stored 100
+    f.on(
+        ICOMMENTS,
+        &full(101, |id| icomment(id, "a", "x", 3, "2026-11-18T11:00:00Z")),
+    );
+    let p = poll(&f, Some(state()));
+    let g = gaps(&p);
+    assert_eq!(g.len(), 1);
+    assert_eq!(
+        g[0].id,
+        format!("gh:gap:{R}:issue_comments:{}", epoch(NOW).unwrap())
+    );
+    assert_eq!(g[0].src, mailroom_logic::record::Src::Github);
+    assert_eq!(g[0].ts, NOW);
+    assert_eq!(g[0].reference, R);
+    assert_eq!(g[0].url, "https://github.com/CycleFive/kharon");
+    assert!(g[0].title.contains("issue_comments"));
+    assert!(g[0].title.contains(R));
+    assert!(g[0].tags.is_empty());
+}
+
+#[test]
+fn full_all_new_event_list_yields_events_gap() {
+    let f = feed();
+    f.on(EVENTS, &full(101, |id| event(id, "subscribed", "a", "a", "")));
+    let p = poll(&f, Some(state()));
+    let g = gaps(&p);
+    assert_eq!(g.len(), 1);
+    assert!(g[0].id.contains(":events:"));
+}
+
+#[test]
+fn full_list_with_an_already_seen_item_yields_no_gap() {
+    let f = feed();
+    // id 100 equals the stored watermark: already seen
+    f.on(
+        ICOMMENTS,
+        &full(100, |id| icomment(id, "a", "x", 3, "2026-11-18T11:00:00Z")),
+    );
+    assert!(gaps(&poll(&f, Some(state()))).is_empty());
+}
+
+#[test]
+fn first_contact_never_yields_a_gap() {
+    let f = feed();
+    f.on(
+        ICOMMENTS,
+        &full(101, |id| icomment(id, "a", "x", 3, "2026-11-18T11:00:00Z")),
+    );
+    assert!(poll(&f, None).records.is_empty());
+}
+
+#[test]
+fn each_list_has_its_own_gap_name() {
+    let f = feed();
+    f.on(ISSUES, &full(6, |n| issue(n, "a", "")));
+    f.on(PULLS, &full(6, |n| pull(n, "a", "2026-11-18T09:00:00Z", "")));
+    f.on(RCOMMENTS, &full(101, |id| rcomment(id, "a", "x", 3)));
+    let p = poll(&f, Some(state()));
+    let mut names: Vec<String> = gaps(&p)
+        .iter()
+        .map(|g| g.id.split(':').nth(3).unwrap().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["issues", "pulls", "review_comments"]);
 }

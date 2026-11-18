@@ -4,6 +4,7 @@
   "main": "../build/index.js",
   "compatibility_date": "2026-10-01",
   "workers_dev": false,
+  "preview_urls": false,
   "build": { "command": "cd .. && worker-build --release" },
   "durable_objects": { "bindings": [{ "name": "MAILBOX", "class_name": "Mailbox" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] }],
