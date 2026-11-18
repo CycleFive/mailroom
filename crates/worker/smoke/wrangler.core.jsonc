@@ -1,0 +1,26 @@
+// Smoke-test configuration for mailroom-core. Test-only: never deploy this file.
+{
+  "name": "mailroom-core",
+  "main": "../build/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "build": { "command": "cd .. && worker-build --release" },
+  "durable_objects": { "bindings": [{ "name": "MAILBOX", "class_name": "Mailbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] }],
+  "services": [{ "binding": "FEED", "service": "mailroom-smoke-feed", "entrypoint": "Feed" }],
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    // TEST-ONLY: makes every target due on every tick, so the smoke test need not wait for every_secs.
+    "MAILROOM_FORCE_DUE": "true",
+    "MAILROOM": {
+      "agents": {
+        "alpha": {
+          "sources": [{ "type": "discord", "broker": "FEED", "every_secs": 60, "channels": ["10000", "30000"] }]
+        },
+        "beta": {
+          "sources": [{ "type": "discord", "broker": "FEED", "every_secs": 60, "channels": ["20000"] }]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,72 @@
+// Copy to wrangler.jsonc (git-ignored) and fill in your own values:
+//   cp wrangler.example.jsonc wrangler.jsonc
+// mailroom-core has no public URL: only the door Worker (a service binding) talks to it.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mailroom-core",
+  "main": "build/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "build": { "command": "worker-build --release" },
+  // One SQLite-backed Durable Object per agent holds that agent's inbox.
+  "durable_objects": { "bindings": [{ "name": "MAILBOX", "class_name": "Mailbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] }],
+  // One service binding per broker named in MAILROOM below. The binding name is the
+  // "broker" value in the config; the target Worker must export a `Feed` entrypoint.
+  "services": [
+    // Discord broker used by the "claude" agent.
+    { "binding": "DISCORD_CLAUDE", "service": "discord-broker", "entrypoint": "Feed" },
+    // A second Discord bot used by the "manus" agent.
+    { "binding": "DISCORD_MANUS", "service": "discord-broker-manus", "entrypoint": "Feed" },
+    // GitHub broker, shared by both agents.
+    { "binding": "GITHUB", "service": "github-broker", "entrypoint": "Feed" }
+  ],
+  // The poller runs once a minute; each target is polled when its own every_secs has elapsed.
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "MAILROOM": {
+      // Acknowledged records older than this many days are deleted. 0 keeps everything.
+      "retain_days": 30,
+      "agents": {
+        // Agent names: 1-32 chars of a-z, 0-9, '-'.
+        "claude": {
+          "sources": [
+            {
+              "type": "discord",
+              "broker": "DISCORD_CLAUDE",
+              // Minimum 60. Default 120.
+              "every_secs": 120,
+              // Numeric channel IDs (Developer Mode -> right-click a channel -> Copy Channel ID).
+              "channels": ["111111111111111111", "222222222222222222"],
+              // "all" keeps every record; "tagged" keeps only records that carry a tag.
+              "keep": "tagged",
+              "rules": [
+                { "when": { "body_contains": ["urgent"] }, "then": { "tag": "urgent" } },
+                { "when": { "actor": ["some-noisy-bot"] }, "then": "drop" }
+              ]
+            },
+            {
+              "type": "github",
+              "broker": "GITHUB",
+              // Minimum 60. Default 300.
+              "every_secs": 300,
+              "repos": ["your-org/your-repo"],
+              // Optional: a label that marks a PR as wanting this agent's review.
+              "review_label": "needs-claude"
+            }
+          ]
+        },
+        "manus": {
+          "sources": [
+            {
+              "type": "discord",
+              "broker": "DISCORD_MANUS",
+              "channels": ["333333333333333333"]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "observability": { "enabled": true }
+}
