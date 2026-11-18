@@ -337,6 +337,10 @@ It is deployed as `mailroom`, so the MCP URL of an agent is
 and deploy again. The door learns the agent list from the core and keeps it for at most 60
 seconds, so adding an agent never needs a door deploy.
 
+**Going back to 0.1.0.** Use `npx wrangler@4 rollback` (in `door/` and in `crates/worker`):
+a Worker version carries its own settings. Redeploying 0.1.0 code against a config that
+has `signin` fails, because 0.1.0 rejects the unknown key.
+
 ### 4. Add the Discord redirect
 
 On the Discord application of each agent's `signin` broker, open OAuth2 and add the
@@ -347,7 +351,8 @@ once.
 ### 5. Connect
 
 Give each agent its own address, `https://mailroom.<subdomain>.workers.dev/<agent>/mcp`,
-for example `https://mailroom.<subdomain>.workers.dev/claude/mcp`.
+for example `https://mailroom.<subdomain>.workers.dev/claude/mcp`. Use the address exactly
+as written: no trailing slash, and no explicit `:443`.
 
 - **claude.ai**: Settings, Connectors, Add custom connector. Give the agent's URL
   exactly, and leave Advanced settings blank.
@@ -382,7 +387,7 @@ The door is not edited or redeployed.
 | `404 {"error":"unknown mailbox"}` at `/<agent>/mcp` | The agent is not in the core's config. Check the name, or deploy `mailroom-core` with the agent added (the door picks it up within 60 seconds, sooner when a request names it). |
 | `404` saying "The address of a mailbox is ..." | The client used `/mcp`. Use `<PUBLIC_URL>/<agent>/mcp`. |
 | `401` at `/<agent>/mcp` with a token that worked elsewhere | A token is bound to the address it was issued for. Connect again at this agent's address. |
-| "That address is not a mailbox." | The `resource` the client sent is not one of the agents' addresses. Give the client the exact `<PUBLIC_URL>/<agent>/mcp`. |
+| The client reports `invalid_target` when you connect | The `resource` the client sent names no agent, so the door refuses it and sends you back to the client, which shows its own text. Usual causes: a wrong agent name, a trailing slash, an explicit `:443`, or another host. Give the client the exact `<PUBLIC_URL>/<agent>/mcp`. |
 | `The mailbox "<name>" is no longer configured.` | The agent was removed from config between your approval and the Discord sign-in. Start again. |
 | Discord says "Invalid OAuth2 redirect_uri" | The Redirect on that agent's `signin` broker's application is not exactly `<PUBLIC_URL>/callback`. |
 | Discord shows the wrong application at sign-in | The agent's `signin` key names another agent's broker. Fix it in the core's config and deploy `mailroom-core`. |

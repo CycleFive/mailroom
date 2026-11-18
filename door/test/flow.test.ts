@@ -293,6 +293,29 @@ describe("authorization names the mailbox", () => {
   });
 });
 
+describe("agents added or named oddly", () => {
+  it("reaches the consent page of an agent added within the cache window", async () => {
+    core.agents = ["claude"];
+    const e = env();
+    await call(e, "/claude/mcp", { method: "POST", body: "{}" });
+    core.agents = ["claude", "manus"];
+    const s = await startAuthorize(e, "manus");
+    expect(s.status).toBe(200);
+    expect(s.html).toContain("<strong>manus</strong>");
+  });
+
+  it("serves an agent named mcp at /mcp/mcp, while /mcp still explains", async () => {
+    core.agents = ["claude", "mcp"];
+    const e = env();
+    const r = await call(e, "/mcp/mcp", { method: "POST", body: "{}" });
+    expect(r.status).toBe(401);
+    expect(r.headers.get("www-authenticate")).toContain(`${BASE}/.well-known/oauth-protected-resource/mcp/mcp`);
+    const plain = await call(e, "/mcp", { method: "POST", body: "{}" });
+    expect(plain.status).toBe(404);
+    expect(await plain.text()).toContain("The address of a mailbox is");
+  });
+});
+
 describe("failures of the core", () => {
   it("shows a generic message when the agent list is unavailable, never the core's text", async () => {
     core.agentsFailure = { status: 500, message: "mailroom config: secret-channel-123" };

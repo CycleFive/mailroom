@@ -155,7 +155,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   }
-  if (pathname === "/mcp" || pathname.startsWith("/mcp/")) {
+  // An agent named "mcp" lives at /mcp/mcp, so only the other /mcp/... paths get the explanation.
+  if (pathname === "/mcp" || (pathname.startsWith("/mcp/") && !AGENT_PATH.test(pathname))) {
     return new Response(`The address of a mailbox is ${publicUrl(env)}/<agent>/mcp.\n`, { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
   }
 
@@ -166,6 +167,11 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     if (named && !agents.includes(named[1])) {
       agents = await getAgents(env, true);
       if (!agents.includes(named[1])) return unknownMailbox();
+    }
+    // A client that names an agent the cache has not seen yet (just added) gets one fresh look.
+    if (pathname === "/authorize" && request.method === "GET") {
+      const wanted = new URL(request.url).searchParams.get("resource")?.match(/^https?:\/\/[^/]+\/([a-z0-9-]{1,32})\/mcp$/)?.[1];
+      if (wanted && !agents.includes(wanted)) agents = await getAgents(env, true);
     }
     const { as, rs } = getRoles(env, agents);
 
