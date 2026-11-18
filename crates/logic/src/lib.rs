@@ -4,6 +4,7 @@ pub mod config;
 pub mod discord;
 pub mod feed;
 pub mod filter;
+pub mod github;
 pub mod record;
 pub mod time;
 
