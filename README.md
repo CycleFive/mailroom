@@ -69,7 +69,7 @@ Every item in every inbox has this shape:
 
 ```json
 {"seq": 12, "ts_ingest": "2026-11-18T10:05:00Z", "src": "discord", "kind": "message",
- "id": "dc:123456789012345678", "ts": "2026-11-18T10:04:40Z", "actor": "Nyx",
+ "id": "dc:123456789012345678", "ts": "2026-11-18T10:04:40.123000+00:00", "actor": "Nyx",
  "ref": "#general", "title": "", "body": "...",
  "url": "https://discord.com/channels/111111111111111111/222222222222222222/123456789012345678",
  "tags": ["routed:mention"]}
@@ -84,7 +84,7 @@ Every item in every inbox has this shape:
 | `id` | Unique per inbox. A second append of the same `id` is ignored, so overlapping polls are harmless. |
 | `ts`, `actor` | When it happened and who did it. |
 | `ref` | `#<channel name>` for Discord, `<owner>/<repo>#<number>` for GitHub. |
-| `title`, `body` | An excerpt: Discord content up to 2000 characters, GitHub bodies up to 600 with ` [...]`. |
+| `title`, `body` | An excerpt: Discord content up to 2000 characters (attachment and embed summary lines are appended after the cut), GitHub bodies up to 600 with ` [...]`. |
 | `url` | What the agent needs to act: a Discord jump link (guild, channel, message IDs) or a GitHub `html_url` (repo and number). |
 | `tags` | Built-in and rule-added tags, below. |
 
@@ -220,7 +220,7 @@ purges it.
 ## What is polled, and what is missed
 
 Polling is REST only: a cron trigger fires every minute, and each target (a channel or a
-repo) is polled when its `every_secs` has elapsed. There is no gateway listener and no
+repo) is polled when it is next due, about `every_secs` after its last attempt. There is no gateway listener and no
 webhook.
 
 - **First contact emits nothing.** The first poll of a target records its current position
@@ -235,12 +235,15 @@ webhook.
 - **Threads.** Not discovered. A thread is watched only when its ID is listed in
   `channels`.
 - **Edits and deletions** are ignored, on both Discord and GitHub.
-- **GitHub.** Issues, pulls, issue comments, review comments, reviews and issue events,
-  each against its own watermark. The last-check time is stored 60 seconds early so
-  nothing falls between two polls; the unique `id` absorbs the overlap. Workflow runs are
-  not recorded.
+- **GitHub.** Issues, pulls, issue comments, review comments, reviews and issue events.
+  Reviews are found by their submission time since the last check. The last-check time is stored 60 seconds early so nothing falls
+  between two polls; the unique `id` absorbs the overlap. Workflow runs are not recorded.
+- **Limits.** Each GitHub list is read 50 items per poll, and there is no `gap` record
+  for GitHub: if more than 50 new items arrive between two polls, the extra ones are
+  missed silently. Discord reactor lists are capped at 100 per message.
 - **Failures.** A failed target changes nothing except its status (time and error text),
-  and the next tick retries from the same position. Targets fail independently. If a
+  and the target is retried when it is next due (after its own `every_secs`), from the
+  same position. Targets fail independently. If a
   broker's identity cannot be read, every target of that source fails for the tick.
 
 ## Setup
@@ -249,7 +252,7 @@ You need:
 
 - Rust (stable) with the wasm target: `rustup target add wasm32-unknown-unknown`
 - `worker-build`: `cargo install worker-build --version 0.9.0 --locked`
-- Node 20+
+- Node 22.12 or newer
 - A Cloudflare account
 - discord-broker and github-broker, both at 0.2.0 or later, already set up
 
@@ -272,9 +275,12 @@ Edit `wrangler.jsonc`: fill in `MAILROOM` (see Configuration), and make sure the
 `services` entry per broker named in it, each with `"entrypoint": "Feed"`. Then:
 
 ```sh
-npx wrangler login
-npx wrangler deploy
+npx wrangler@4 login
+npx wrangler@4 deploy
 ```
+
+This crate has no `package.json`, so `npx wrangler@4` fetches Wrangler on the fly; the
+`@4` pins the major version.
 
 The Worker is named `mailroom-core`. It has no public URL (`workers_dev` is false and
 there are no routes); the door reaches it through a service binding. It also runs a cron
@@ -341,17 +347,22 @@ it, so the page shows the agent name prominently and `mailbox_info` returns it. 
 
 | You see | Usually |
 | --- | --- |
-| `mailbox_info` shows a `last_error` on a target | That target's last poll failed; the position has not moved and the next tick retries. The text says whether the broker, the allowlist or Discord/GitHub refused. Discord sometimes answers Workers with a 429 because of other traffic on a shared IP; it usually clears. |
-| HTTP 500 `mailroom config: ...` on every call, or on the consent page | The `MAILROOM` var is invalid; the message names the agent, source and field. Fix it and deploy `mailroom-core`. |
-| "Pick a mailbox." | You approved without choosing one, or the choice is no longer in the config. Go back and pick. |
+| `mailbox_info` shows a `last_error` on a target | That target's last poll failed; the position has not moved and the target is retried when it is next due (after its own `every_secs`). The text says whether the broker, the allowlist or Discord/GitHub refused. Discord sometimes answers Workers with a 429 because of other traffic on a shared IP; it usually clears. |
+| HTTP 500 `mailroom config: ...` on every call, or an error page with that message on the consent page (the door shows it as 502) | The `MAILROOM` var is invalid; the message names the agent, source and field. Fix it and deploy `mailroom-core`. |
+| "Pick a mailbox." | The mailbox you posted is not in the current config. Go back and pick. |
+| `The mailbox "<name>" is no longer configured.` | The agent was removed from config between your approval and the Discord sign-in. Start again and pick another. |
 | Discord says "Invalid OAuth2 redirect_uri" | The Redirect on the `SIGNIN` broker's application is not exactly `<PUBLIC_URL>/callback`. |
 | The door's sign-in page shows a broker error | The code exchange failed in the broker (usually the client secret or the redirect). Fix it there. |
 | "not in ALLOWED_DISCORD_USERS" | The page names the account and ID; put that ID in the door's var and deploy. |
 | `ack` is refused | `seq` must be between the cursor and `last_seq`. |
 | A channel produces nothing | First contact emits nothing; check `last_ok` in `mailbox_info`, the broker's channel allowlist, and that the bot can read the channel. |
 
-`npx wrangler tail` on either Worker shows one JSON line per poll (`poll`), tool call
-(`tool_call`) and Feed call (`feed`).
+`npx wrangler@4 tail mailroom-core` (from `crates/worker`) shows one JSON line per poll
+(`poll`) and tool call (`tool_call`). `npx wrangler tail` in `door/` shows the door's
+sign-in and OAuth events (`oauth_endpoint`, `authorize_error`, `sign_in`, `sign_in_refused`,
+`sign_in_cancelled`, `agent_gone`, `agents_unavailable`, `config_error`, and a few
+failure events). The brokers log their own `feed` lines; read those with `wrangler tail`
+in each broker.
 
 ## A prompt for the agent
 
