@@ -1,4 +1,4 @@
-use mailroom_logic::time::{epoch, iso};
+use mailroom_logic::time::{due, epoch, iso};
 
 #[test]
 fn iso_round_trips() {
@@ -26,4 +26,20 @@ fn offset_and_fractions() {
 #[test]
 fn garbage_is_none() {
     assert_eq!(epoch("nope"), None);
+}
+
+#[test]
+fn never_attempted_is_due() {
+    assert!(due(0, 300, 1795000000));
+}
+
+#[test]
+fn due_with_slack() {
+    let last = 1795000000;
+    assert!(due(last, 60, last + 59));
+    assert!(!due(last, 60, last + 29));
+    assert!(due(last, 120, last + 119));
+    assert!(!due(last, 120, last + 60));
+    assert!(!due(last, 300, last + 240));
+    assert!(due(last, 300, last + 299));
 }
