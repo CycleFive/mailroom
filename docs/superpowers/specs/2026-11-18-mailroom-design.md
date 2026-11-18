@@ -133,7 +133,7 @@ default and `manus` environments.
 
 Cargo workspace with two crates so the logic is tested natively:
 
-- `crates/core` — pure Rust, no `worker` dependency. Record type, config types and
+- `crates/logic` — pure Rust, no `worker` dependency. Record type, config types and
   validation, filter engine, Discord and GitHub pollers written against a
   `FeedClient` trait, MCP protocol types. Native `cargo test`.
 - `crates/worker` — `worker` 0.9 glue: fetch and scheduled handlers, the `Mailbox`
@@ -235,10 +235,12 @@ keeps the wasm small).
 
 A cron trigger fires every minute. The scheduled handler asks each configured
 agent's Durable Object to `tick`. A tick polls each target (a channel or a repo)
-whose `every_secs` has elapsed since its last attempt. An in-memory flag makes an
-overlapping tick return at once.
+whose `every_secs` has elapsed since its last attempt. The last attempt is stamped
+with the tick's start time and a target counts as due 30 seconds early, so the
+jitter of the one-minute cron cannot push a poll a whole minute late. An in-memory
+flag makes an overlapping tick return at once.
 
-Each target is polled by a pure function in `crates/core`:
+Each target is polled by a pure function in `crates/logic`:
 
 ```
 poll(feed, source_config, identity, previous_state) -> Result<(Vec<Record>, new_state), PollError>
@@ -362,7 +364,7 @@ Operator setup this requires: one extra redirect,
 
 ## Testing
 
-- `crates/core`: unit tests for config validation, the filter engine, both pollers
+- `crates/logic`: unit tests for config validation, the filter engine, both pollers
   against a scripted fake `FeedClient` (first contact, delta, paging, gap, reaction
   diff, fail-closed on any upstream error), and MCP message round-trips.
 - `crates/worker`: a local smoke test (`wrangler dev` with a fake `Feed` Worker)
@@ -398,7 +400,7 @@ same channels through `discord-broker-manus`.
   the agent name shown prominently, and `mailbox_info` returns the agent name. A
   per-agent client-host allowlist is the follow-up if this bites.
 - **Shared-IP 429s from Discord** (documented in the broker README) surface as
-  failed polls; the watermark stays put and the next tick retries.
+  failed polls; the watermark stays put and the target is retried when it is next due.
 - **Reaction window.** Reactions on messages older than the latest 50 per channel
   are not seen.
 - **`worker` crate churn.** 0.9.0 is a week old. The crate is pinned exactly.
