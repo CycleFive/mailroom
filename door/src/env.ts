@@ -1,10 +1,11 @@
 export interface Env {
   /** KV namespace the OAuth library keeps clients, grants and tokens in. */
   OAUTH_KV: KVNamespace;
-  /** Service binding to mailroom-core, the mailbox logic. It has no public URL. */
+  /**
+   * Service binding to mailroom-core, the mailbox logic. It has no public URL. It also routes each
+   * agent's Sign in with Discord (client ID and code exchange) to that agent's own broker.
+   */
   MAILROOM: Fetcher;
-  /** Service binding to discord-broker, entrypoint Feed: Sign in with Discord code exchange. */
-  SIGNIN: Fetcher;
 
   /** This Worker's public origin, e.g. https://mailroom.example.workers.dev (no trailing slash). */
   PUBLIC_URL: string;

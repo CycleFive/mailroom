@@ -1,3 +1,5 @@
+> Amended by `2026-11-18-per-agent-signin-design.md`: an MCP address per agent (`/<agent>/mcp`) and per-agent Discord sign-in through the core. Where the two disagree, that document wins.
+
 # Mailroom — per-agent mailboxes on Cloudflare (design)
 
 Date: 2026-11-18. Status: approved in conversation (shape and language); details

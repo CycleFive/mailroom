@@ -1,5 +1,4 @@
-// Test doubles: in-memory KV, and fake service bindings for discord-broker's Feed (SIGNIN)
-// and mailroom-core (MAILROOM).
+// Test doubles: in-memory KV, and a fake service binding for mailroom-core (MAILROOM).
 
 export class MemoryKV {
   m = new Map<string, { v: string; exp?: number; metadata?: unknown }>();
@@ -27,29 +26,6 @@ export const jsonRes = (body: unknown, status = 200) =>
 
 export const CLIENT_ID = "123456789012345678";
 
-/** Imitates discord-broker's Feed: GET /signin/client and POST /signin. */
-export class FakeSignin {
-  user = { id: "800000000000000001", username: "lothrop" };
-  /** When set, POST /signin answers this status with {"error": message}. */
-  failure: { status: number; message: string } | null = null;
-  seen: { path: string; method: string; body?: unknown }[] = [];
-
-  fetcher = {
-    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-      const req = new Request(input, init);
-      const path = new URL(req.url).pathname;
-      const body = req.method === "POST" ? await req.json().catch(() => null) : undefined;
-      this.seen.push({ path, method: req.method, body });
-      if (path === "/signin/client" && req.method === "GET") return jsonRes({ client_id: CLIENT_ID });
-      if (path === "/signin" && req.method === "POST") {
-        if (this.failure) return jsonRes({ error: this.failure.message }, this.failure.status);
-        return jsonRes(this.user);
-      }
-      return jsonRes({ error: "not found" }, 404);
-    },
-  } as unknown as Fetcher;
-}
-
 export interface CoreSeen {
   url: string;
   method: string;
@@ -57,20 +33,45 @@ export interface CoreSeen {
   body: string;
 }
 
-/** Imitates mailroom-core: serves /agents and records everything else it is sent. */
+/**
+ * Imitates mailroom-core: /agents, /signin/client, /signin and /mcp.
+ * Sign-in calls are recorded in `signin`, everything else (the /mcp forwards) in `seen`.
+ */
 export class FakeCore {
   agents = ["claude", "manus"];
+  /** The Discord client ID per agent; unknown agents get 404 like the real core. */
+  clientIds: Record<string, string> = { claude: CLIENT_ID, manus: "223456789012345678" };
+  user = { id: "800000000000000001", username: "lothrop" };
   /** When set, /agents answers this status with {"error": message}. */
   agentsFailure: { status: number; message: string } | null = null;
+  /** When set, GET /signin/client answers this status with {"error": message}. */
+  clientFailure: { status: number; message: string } | null = null;
+  /** When set, POST /signin answers this status with {"error": message}. */
+  failure: { status: number; message: string } | null = null;
+  agentsCalls = 0;
+  signin: { path: string; method: string; query?: string; body?: unknown }[] = [];
   seen: CoreSeen[] = [];
 
   fetcher = {
     fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
       const req = new Request(input, init);
-      const path = new URL(req.url).pathname;
+      const url = new URL(req.url);
+      const path = url.pathname;
       if (path === "/agents") {
+        this.agentsCalls++;
         if (this.agentsFailure) return jsonRes({ error: this.agentsFailure.message }, this.agentsFailure.status);
         return jsonRes({ agents: this.agents });
+      }
+      if (path === "/signin/client" && req.method === "GET") {
+        this.signin.push({ path, method: "GET", query: url.search });
+        if (this.clientFailure) return jsonRes({ error: this.clientFailure.message }, this.clientFailure.status);
+        const id = this.clientIds[url.searchParams.get("agent") ?? ""];
+        return id ? jsonRes({ client_id: id }) : jsonRes({ error: "unknown mailbox" }, 404);
+      }
+      if (path === "/signin" && req.method === "POST") {
+        this.signin.push({ path, method: "POST", body: await req.json().catch(() => null) });
+        if (this.failure) return jsonRes({ error: this.failure.message }, this.failure.status);
+        return jsonRes(this.user);
       }
       this.seen.push({ url: req.url, method: req.method, headers: req.headers, body: await req.text() });
       return jsonRes({ jsonrpc: "2.0", id: 1, result: { ok: true } });

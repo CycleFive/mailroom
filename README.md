@@ -9,13 +9,15 @@ needs it.
  claude.ai / Manus
         │  OAuth bearer
         ▼
- mailroom  (TypeScript door, public)          discord-broker[-manus]   github-broker
-   /authorize  consent + mailbox picker   ┌──▶ Feed (internal, read-only) ◀──┐
-   /callback   Discord sign-in ───────────┘        ▲                          │
-   /mcp        token check, then forward           │ service bindings         │
-        │ service binding                           │                          │
-        ▼                                           │                          │
- mailroom-core  (Rust, no public URL) ──────────────┴──────────────────────────┘
+ mailroom  (TypeScript door, public)
+   /authorize     consent for the agent named in the request
+   /callback      Discord sign-in, through the core
+   /<agent>/mcp   token check, then forward
+        │ service binding (the door's only one)
+        ▼
+ mailroom-core  (Rust, no public URL) ──▶ Feed (internal) of discord-broker[-manus]
+   fetch      /signin/client, /signin ─▶   and github-broker, by service bindings
+              the agent's own broker
    fetch      MCP JSON-RPC  ─▶ Mailbox DO (by agent name)
    scheduled  every minute  ─▶ each agent's Mailbox DO: tick
    Mailbox DO SQLite inbox, cursor, per-target poll state
@@ -59,6 +61,10 @@ The brokers must be at version 0.2.0 or later: that version adds the internal `F
 entrypoint mailroom reads through. `Feed` is read-only and has no public URL. It is
 reachable only through a service binding from a Worker in the same Cloudflare account, and
 the brokers' allowlists (`DISCORD_ALLOWED_GUILDS`, `DISCORD_ALLOWED_CHANNELS`) apply to it.
+
+Each agent has its own address, `<PUBLIC_URL>/<agent>/mcp`, and signs in through its own
+Discord application: the door asks the core, and the core forwards to the broker named by
+the agent's `signin` key. The door has no binding to any broker.
 
 The door is TypeScript only because `@cloudflare/workers-oauth-provider`, the tested OAuth
 2.1 authorization server, exists in no other language. It holds no mailbox logic.
@@ -131,7 +137,14 @@ tick, and unknown fields are rejected.
 | Field | Default | Rule |
 | --- | --- | --- |
 | `retain_days` | `30` | Acknowledged records older than this are pruned. `0` keeps everything. Unread records are never pruned. |
-| `agents` | required | Map of agent name to `{ "sources": [...] }`. Must not be empty. Names are 1-32 characters of `a-z`, `0-9`, `-`. |
+| `agents` | required | Map of agent name to `{ "signin": "...", "sources": [...] }`. Must not be empty. Names are 1-32 characters of `a-z`, `0-9`, `-`. |
+
+**Agent**
+
+| Field | Default | Rule |
+| --- | --- | --- |
+| `signin` | required | Name of a service binding to a discord-broker `Feed`, the broker whose Discord application this agent signs in through. Non-empty, only `A-Z`, `0-9`, `_`. It need not be a broker the agent also polls. |
+| `sources` | required | The sources below. |
 
 **Discord source** (`"type": "discord"`)
 
@@ -194,6 +207,7 @@ purges it.
   "retain_days": 30,
   "agents": {
     "claude": {
+      "signin": "DISCORD_CLAUDE",
       "sources": [
         { "type": "discord", "broker": "DISCORD_CLAUDE", "every_secs": 120,
           "channels": ["123456789012345678", "123456789012345679"],
@@ -208,6 +222,7 @@ purges it.
       ]
     },
     "manus": {
+      "signin": "DISCORD_MANUS",
       "sources": [
         { "type": "discord", "broker": "DISCORD_MANUS",
           "channels": ["123456789012345678"] }
@@ -259,8 +274,8 @@ You need:
 - A Cloudflare account
 - discord-broker and github-broker, both at 0.2.0 or later, already set up
 
-The Discord redirect and the mailbox picker below assume the broker bound as `SIGNIN` is
-the discord-broker whose application you already sign in with.
+Each agent signs in through the Discord application of the broker named by its `signin`
+key, so that application needs the door's redirect (step 4).
 
 ### 1. Deploy the brokers' `Feed`
 
@@ -275,7 +290,8 @@ cp wrangler.example.jsonc wrangler.jsonc
 ```
 
 Edit `wrangler.jsonc`: fill in `MAILROOM` (see Configuration), and make sure there is one
-`services` entry per broker named in it, each with `"entrypoint": "Feed"`. Then:
+`services` entry per broker named in it (including each agent's `signin` broker), each
+with `"entrypoint": "Feed"`. Then:
 
 ```sh
 npx wrangler@4 login
@@ -308,43 +324,54 @@ into it and fill in `vars`:
 | `ALLOWED_ORIGINS` | Optional. Comma-separated Origins accepted when a request carries an Origin header. |
 | `DISABLE_CIMD` | Optional. `"true"` makes clients register through Dynamic Client Registration instead of a Client ID Metadata Document. |
 
-The `MAILROOM` service binding points at `mailroom-core`. The `SIGNIN` binding points at
-`discord-broker` with entrypoint `Feed`. The door holds no secrets: the Discord client
-secret stays in the broker.
+The `MAILROOM` service binding points at `mailroom-core`. It is the door's only binding:
+the Discord client ID and the code exchange go through the core to each agent's broker.
+The door holds no secrets: the Discord client secrets stay in the brokers.
 
 ```sh
 npx wrangler deploy
 ```
 
-It is deployed as `mailroom`, so the MCP URL is
-`https://mailroom.<subdomain>.workers.dev/mcp`. Put that origin in `PUBLIC_URL` and
-deploy again.
+It is deployed as `mailroom`, so the MCP URL of an agent is
+`https://mailroom.<subdomain>.workers.dev/<agent>/mcp`. Put that origin in `PUBLIC_URL`
+and deploy again. The door learns the agent list from the core and keeps it for at most 60
+seconds, so adding an agent never needs a door deploy.
 
 ### 4. Add the Discord redirect
 
-On the Discord application of the broker bound as `SIGNIN`, open OAuth2 and add the
+On the Discord application of each agent's `signin` broker, open OAuth2 and add the
 Redirect `https://mailroom.<subdomain>.workers.dev/callback`. It must match exactly, with
-no trailing slash. Every operator signs in through that application whichever mailbox they
-pick, so this one redirect is enough.
+no trailing slash. Every agent uses this same URL, so each agent's application lists it
+once.
 
 ### 5. Connect
 
-- **claude.ai**: Settings, Connectors, Add custom connector. Give the URL
-  `https://mailroom.<subdomain>.workers.dev/mcp` exactly, and leave Advanced settings
-  blank.
-- **Claude Code**: `claude mcp add --transport http mailroom https://mailroom.<subdomain>.workers.dev/mcp`
-- **Manus**: add a custom MCP server with the same URL, and complete the sign-in.
+Give each agent its own address, `https://mailroom.<subdomain>.workers.dev/<agent>/mcp`,
+for example `https://mailroom.<subdomain>.workers.dev/claude/mcp`.
 
-You see the consent page (check it names the client you expect), then Discord's
-"authorize" screen asking only for your username.
+- **claude.ai**: Settings, Connectors, Add custom connector. Give the agent's URL
+  exactly, and leave Advanced settings blank.
+- **Claude Code**: `claude mcp add --transport http mailroom https://mailroom.<subdomain>.workers.dev/<agent>/mcp`
+- **Manus**: add a custom MCP server with the agent's URL, and complete the sign-in.
 
-### 6. Pick the mailbox
+You see the consent page, which names the mailbox and the client (check both), then
+Discord's "authorize" screen asking only for your username. The Discord application is
+the agent's own. The address names the mailbox, so there is nothing to pick, and a token
+for one agent is refused at another agent's address. Check `agent` in `mailbox_info`
+after connecting.
 
-The consent page lists the configured agents as radio buttons with none selected. Pick the
-one this client is. The choice is stored in the grant and cannot be changed without
-signing in again. Nothing stops a client being given another agent's mailbox if you pick
-it, so the page shows the agent name prominently and `mailbox_info` returns it. Check
-`agent` in `mailbox_info` after connecting.
+A client that does not say which address it wants (it sends no `resource` parameter)
+gets a page listing the mailboxes instead. Picking one continues as above.
+
+### Adding an agent
+
+1. Deploy its brokers.
+2. On `mailroom-core`: add the service bindings and the agent's entry (with `signin`),
+   then deploy.
+3. On the agent's Discord application: add the redirect `<PUBLIC_URL>/callback`.
+4. Give the agent the address `<PUBLIC_URL>/<agent>/mcp`.
+
+The door is not edited or redeployed.
 
 ## If something is wrong
 
@@ -352,10 +379,14 @@ it, so the page shows the agent name prominently and `mailbox_info` returns it. 
 | --- | --- |
 | `mailbox_info` shows a `last_error` on a target | That target's last poll failed; the position has not moved and the target is retried when it is next due (after its own `every_secs`). The text says whether the broker, the allowlist or Discord/GitHub refused. Discord sometimes answers Workers with a 429 because of other traffic on a shared IP; it usually clears. |
 | HTTP 500 `mailroom config: ...` on every call, or an error page saying "The mailroom is misconfigured" on the consent page (the door shows it as 502) | The `MAILROOM` var is invalid. The page is generic on purpose; the door logs the reason as `agents_unavailable`, and the call's body names the agent, source and field. Fix it and deploy `mailroom-core`. |
-| "Pick a mailbox." | The mailbox you posted is not in the current config. Go back and pick. |
-| `The mailbox "<name>" is no longer configured.` | The agent was removed from config between your approval and the Discord sign-in. Start again and pick another. |
-| Discord says "Invalid OAuth2 redirect_uri" | The Redirect on the `SIGNIN` broker's application is not exactly `<PUBLIC_URL>/callback`. |
-| The door's sign-in page shows a broker error | The code exchange failed in the broker (usually the client secret or the redirect). Fix it there. |
+| `404 {"error":"unknown mailbox"}` at `/<agent>/mcp` | The agent is not in the core's config. Check the name, or deploy `mailroom-core` with the agent added (the door picks it up within 60 seconds, sooner when a request names it). |
+| `404` saying "The address of a mailbox is ..." | The client used `/mcp`. Use `<PUBLIC_URL>/<agent>/mcp`. |
+| `401` at `/<agent>/mcp` with a token that worked elsewhere | A token is bound to the address it was issued for. Connect again at this agent's address. |
+| "That address is not a mailbox." | The `resource` the client sent is not one of the agents' addresses. Give the client the exact `<PUBLIC_URL>/<agent>/mcp`. |
+| `The mailbox "<name>" is no longer configured.` | The agent was removed from config between your approval and the Discord sign-in. Start again. |
+| Discord says "Invalid OAuth2 redirect_uri" | The Redirect on that agent's `signin` broker's application is not exactly `<PUBLIC_URL>/callback`. |
+| Discord shows the wrong application at sign-in | The agent's `signin` key names another agent's broker. Fix it in the core's config and deploy `mailroom-core`. |
+| The sign-in page says "The mailroom is misconfigured" after approving | The core could not reach the agent's `signin` broker, or the broker refused the code (usually the client secret or the redirect). The page is generic on purpose; the door logs `signin_client_failed` or `signin_exchange_failed` with the status and the core's text. |
 | "not in ALLOWED_DISCORD_USERS" | The page names the account and ID; put that ID in the door's var and deploy. |
 | `ack` is refused | `seq` must be between the cursor and `last_seq`. |
 | A channel produces nothing | First contact emits nothing; check `last_ok` in `mailbox_info`, the broker's channel allowlist, and that the bot can read the channel. |
@@ -363,7 +394,7 @@ it, so the page shows the agent name prominently and `mailbox_info` returns it. 
 `npx wrangler@4 tail mailroom-core` (from `crates/worker`) shows one JSON line per poll
 (`poll`) and tool call (`tool_call`). `npx wrangler tail` in `door/` shows the door's
 sign-in and OAuth events (`oauth_endpoint`, `authorize_error`, `sign_in`, `sign_in_refused`,
-`sign_in_cancelled`, `agent_gone`, `agents_unavailable`, `config_error`, and a few
+`sign_in_cancelled`, `signin_client_failed`, `signin_exchange_failed`, `agent_gone`, `agents_unavailable`, `config_error`, and a few
 failure events). The brokers log their own `feed` lines; read those with `wrangler tail`
 in each broker.
 
@@ -384,11 +415,11 @@ handled. Leave anything you did not handle unacknowledged.
 cargo test --workspace                   # the logic crate: config, filters, pollers, MCP
 cargo clippy --workspace --all-targets -- -D warnings
 crates/worker/smoke/run.sh               # wrangler dev with a fake Feed: tick, read_mail, ack, mailbox_info
-cd door && npm test && npm run typecheck # sign-in flow, picker, header stripping
+cd door && npm test && npm run typecheck # sign-in flow, per-agent addresses, header stripping
 ```
 
 The smoke test needs `worker-build`, `curl` and `jq`. The door's tests run the whole
-sign-in against fake `SIGNIN` and `mailroom-core` service bindings; nothing touches a real
+sign-in against a fake `mailroom-core` service binding; nothing touches a real
 Discord or GitHub.
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, clippy, `cargo test`, the wasm
@@ -401,8 +432,8 @@ scheduled handlers), `door/src/` (`index.ts` routing and forwarding, `auth.ts` c
 sign-in, `env.ts`).
 
 Not covered: a Discord gateway listener, GitHub webhooks, workflow-run records, automatic
-thread discovery, editing filters at runtime, and restricting which client may take which
-mailbox.
+thread discovery, editing filters at runtime, and per-agent lists of who may sign in
+(`ALLOWED_DISCORD_USERS` is one list on the door).
 
 ## License
 

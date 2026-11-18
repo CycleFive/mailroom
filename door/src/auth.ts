@@ -1,7 +1,8 @@
-// Sign-in for the MCP endpoint: a consent page where the operator picks which agent's
-// mailbox the client gets, then "Sign in with Discord" (scope identify), then an allowlist
-// check on the Discord user ID. The code exchange is delegated to the discord-broker Worker
-// over a service binding, so this Worker holds no Discord secret.
+// Sign-in for an agent's MCP endpoint: a consent page that names the mailbox (taken from the
+// request's `resource`, RFC 8707), then "Sign in with Discord" (scope identify) through that
+// agent's own Discord application, then an allowlist check on the Discord user ID. The client
+// ID lookup and the code exchange go through mailroom-core, which forwards them to the agent's
+// broker, so this Worker holds no Discord secret and has no binding to any broker.
 
 import {
   AuthorizationError,
@@ -13,7 +14,7 @@ import {
 import { publicUrl, type Env } from "./env";
 
 export const SCOPE = "mailroom";
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 export const DISCORD_AUTHORIZE = "https://discord.com/oauth2/authorize";
 
@@ -69,26 +70,51 @@ fieldset{border:0;padding:0;margin:1rem 0}label{display:block}</style></head>
   );
 }
 
-export function consentPage(d: ConsentDescription, handle: string, agents: string[], headers: Headers): Response {
+/** The resource (MCP address) of an agent. */
+export function agentResource(env: Env, agent: string): string {
+  return `${publicUrl(env)}/${agent}/mcp`;
+}
+
+/** The agent whose resource is exactly `resource`, else null. */
+export function agentOfResource(env: Env, resource: string | undefined, agents: string[]): string | null {
+  if (!resource) return null;
+  return agents.find((a) => agentResource(env, a) === resource) ?? null;
+}
+
+export function consentPage(d: ConsentDescription, handle: string, agent: string, headers: Headers): Response {
   const who = d.clientDomain ? `${escapeHtml(d.clientName)} (verified domain ${escapeHtml(d.clientDomain)})` : escapeHtml(d.clientName);
-  const options = agents
-    .map((a) => `<label><input type="radio" name="agent" value="${escapeHtml(a)}" required> ${escapeHtml(a)}</label>`)
-    .join("\n");
   return page(
     "Connect Mailroom",
     `<h1>Connect Mailroom</h1>
-<p><strong>${who}</strong> wants to read an agent's mailbox: the Discord and GitHub messages addressed to it.</p>
+<p><strong>${who}</strong> wants to read the mailbox of <strong>${escapeHtml(agent)}</strong>: the Discord and GitHub messages addressed to it.</p>
 <p>Access will be sent to <code>${escapeHtml(d.redirectHost)}</code>${d.redirectIsLoopback ? " (an app on this computer)" : ""}.</p>
-<p class="warn">Only continue if you started this yourself, from Claude, and that host is <code>claude.ai</code> (or <code>localhost</code> for Claude Code).</p>
+<p class="warn">Only continue if you started this yourself, from the app you are connecting, and you recognise that host.</p>
 <form method="post" action="/authorize">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
-<fieldset><legend>Pick the mailbox this client should read. It cannot be changed without signing in again.</legend>
-${options}
-</fieldset>
 <button name="decision" value="approve">Continue to Discord</button>
 <button name="decision" value="deny">Deny</button>
 </form>`,
     headers,
+  );
+}
+
+/** Shown when the client named no mailbox: each one links back to /authorize with its resource added. */
+export function mailboxListPage(request: Request, env: Env, agents: string[]): Response {
+  const url = new URL(request.url);
+  const links = agents
+    .map((a) => {
+      const q = new URLSearchParams(url.search);
+      q.set("resource", agentResource(env, a));
+      return `<li><a href="/authorize?${escapeHtml(q.toString())}">${escapeHtml(a)}</a></li>`;
+    })
+    .join("\n");
+  return page(
+    "Pick a mailbox",
+    `<h1>Pick a mailbox</h1>
+<p>The app you are connecting did not say which mailbox it wants. Pick the one it should read.</p>
+<ul>
+${links}
+</ul>`,
   );
 }
 
@@ -117,41 +143,42 @@ function renderAuthError(e: unknown): Response {
   return errorPage(`Unexpected error: ${(e as Error)?.message ?? String(e)}`, 500);
 }
 
-/** The `error` text of a `{"error": "..."}` answer, or a generic line naming the status. */
-async function upstreamError(res: Response, who: string): Promise<string> {
-  const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
-  return typeof body?.error === "string" && body.error ? body.error : `${who} answered ${res.status}.`;
-}
-
 /** Shown to visitors instead of the core's error text, which may quote channel IDs or repo names. */
-const CORE_MISCONFIGURED = "The mailroom is misconfigured. The operator can find the reason in the mailroom-core logs.";
+export const CORE_MISCONFIGURED = "The mailroom is misconfigured. The operator can find the reason in the mailroom-core logs.";
 
-type Agents = { ok: true; agents: string[] } | { ok: false; message: string };
-
-/** The configured agent names, from mailroom-core. */
-async function fetchAgents(env: Env): Promise<Agents> {
-  const res = await env.MAILROOM.fetch("https://mailroom-core/agents");
-  if (res.status !== 200) return { ok: false, message: await upstreamError(res, "mailroom-core") };
-  const body = (await res.json().catch(() => null)) as { agents?: unknown } | null;
-  if (!Array.isArray(body?.agents) || !body.agents.every((a) => typeof a === "string")) {
-    return { ok: false, message: "mailroom-core returned an unreadable agent list." };
-  }
-  return { ok: true, agents: body.agents as string[] };
+/** The `error` text of a `{"error": "..."}` answer, or empty. Goes to the log only, never to a page. */
+async function upstreamError(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+  return typeof body?.error === "string" ? body.error : "";
 }
 
-/** GET and POST /authorize. */
-export async function handleAuthorize(request: Request, env: Env, oauth: OAuthHelpers): Promise<Response> {
+/** The client ID of the agent's Discord application, via the core; null (after logging) on any failure. */
+async function fetchSigninClient(env: Env, agent: string): Promise<string | null> {
+  const res = await env.MAILROOM.fetch(`https://mailroom-core/signin/client?agent=${encodeURIComponent(agent)}`);
+  if (res.status !== 200) {
+    console.log(JSON.stringify({ event: "signin_client_failed", agent, status: res.status, message: await upstreamError(res) }));
+    return null;
+  }
+  const body = (await res.json().catch(() => null)) as { client_id?: unknown } | null;
+  if (typeof body?.client_id !== "string" || !body.client_id) {
+    console.log(JSON.stringify({ event: "signin_client_failed", agent, status: res.status, message: "unreadable answer" }));
+    return null;
+  }
+  return body.client_id;
+}
+
+/** GET and POST /authorize. `agents` is the list the OAuth server was built from. */
+export async function handleAuthorize(request: Request, env: Env, oauth: OAuthHelpers, agents: string[]): Promise<Response> {
   try {
     if (request.method === "GET") {
-      const agents = await fetchAgents(env);
-      if (!agents.ok) {
-        console.log(JSON.stringify({ event: "agents_unavailable", message: agents.message }));
-        return errorPage(CORE_MISCONFIGURED, 502);
-      }
+      // Without a resource the library would refuse the request, so list the mailboxes first.
+      if (!new URL(request.url).searchParams.has("resource")) return mailboxListPage(request, env, agents);
       const authReq = await oauth.parseAuthRequest(request);
+      const agent = agentOfResource(env, authReq.resource, agents);
+      if (!agent) return errorPage("That address is not a mailbox.", 400);
       const details = await oauth.describeConsent(authReq);
       const consent = await oauth.beginConsent(authReq);
-      return consentPage(details, consent.handle, agents.agents, consent.headers);
+      return consentPage(details, consent.handle, agent, consent.headers);
     }
     if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
 
@@ -162,32 +189,22 @@ export async function handleAuthorize(request: Request, env: Env, oauth: OAuthHe
       return new Response(null, { status: 302, headers: denied.headers });
     }
 
-    const agents = await fetchAgents(env);
-    if (!agents.ok) {
-      console.log(JSON.stringify({ event: "agents_unavailable", message: agents.message }));
-      return errorPage(CORE_MISCONFIGURED, 502);
-    }
-    const agent = String(form.get("agent") ?? "");
-    if (!agents.agents.includes(agent)) return errorPage("Pick a mailbox.", 400);
-
     // One scope covers everything; offline_access lets the client refresh without a new sign-in.
     const approved = await oauth.approveConsent(request, handle, { scope: [SCOPE, "offline_access"] });
+    // The mailbox comes from the stored request, never from the form.
+    const agent = agentOfResource(env, approved.request.resource, agents);
+    if (!agent) return errorPage("That address is not a mailbox.", 400);
 
     const problem = configProblem(env);
     if (problem) {
       console.log(JSON.stringify({ event: "config_error", message: problem }));
       return errorPage(problem, 500);
     }
-    const clientRes = await env.SIGNIN.fetch("https://signin/signin/client");
-    const client = (await clientRes.json().catch(() => null)) as { client_id?: unknown } | null;
-    if (clientRes.status !== 200 || typeof client?.client_id !== "string" || !client.client_id) {
-      const message = await upstreamError(clientRes, "discord-broker");
-      console.log(JSON.stringify({ event: "signin_client_failed", status: clientRes.status, message }));
-      return errorPage(message, 502);
-    }
+    const clientId = await fetchSigninClient(env, agent);
+    if (!clientId) return errorPage(CORE_MISCONFIGURED, 502);
     const up = await oauth.beginUpstream(approved.request, { data: { agent }, headers: approved.headers });
     const dc = new URL(DISCORD_AUTHORIZE);
-    dc.searchParams.set("client_id", client.client_id);
+    dc.searchParams.set("client_id", clientId);
     dc.searchParams.set("response_type", "code");
     dc.searchParams.set("redirect_uri", `${publicUrl(env)}/callback`);
     dc.searchParams.set("scope", "identify");
@@ -199,7 +216,7 @@ export async function handleAuthorize(request: Request, env: Env, oauth: OAuthHe
 }
 
 /** GET /callback from Discord. */
-export async function handleCallback(request: Request, env: Env, oauth: OAuthHelpers): Promise<Response> {
+export async function handleCallback(request: Request, env: Env, oauth: OAuthHelpers, agents: string[]): Promise<Response> {
   let resumed;
   try {
     resumed = await oauth.finishUpstream<{ agent: string }>(request);
@@ -214,15 +231,14 @@ export async function handleCallback(request: Request, env: Env, oauth: OAuthHel
     return redirect(authorizationErrorRedirect(authReq, "access_denied", "Discord sign-in was cancelled"), headers);
   }
 
-  const idRes = await env.SIGNIN.fetch("https://signin/signin", {
+  const idRes = await env.MAILROOM.fetch("https://mailroom-core/signin", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, redirect_uri: `${publicUrl(env)}/callback` }),
+    body: JSON.stringify({ agent: data.agent, code, redirect_uri: `${publicUrl(env)}/callback` }),
   });
   if (idRes.status !== 200) {
-    const message = await upstreamError(idRes, "discord-broker");
-    console.log(JSON.stringify({ event: "signin_exchange_failed", status: idRes.status, message }));
-    return errorPage(message, idRes.status >= 400 ? idRes.status : 502);
+    console.log(JSON.stringify({ event: "signin_exchange_failed", agent: data.agent, status: idRes.status, message: await upstreamError(idRes) }));
+    return errorPage(CORE_MISCONFIGURED, 502);
   }
   const id = (await idRes.json().catch(() => null)) as { id?: unknown; username?: unknown } | null;
   if (typeof id?.id !== "string" || typeof id.username !== "string") {
@@ -236,14 +252,9 @@ export async function handleCallback(request: Request, env: Env, oauth: OAuthHel
   }
 
   // The mailbox was valid at consent time; make sure it still is.
-  const agents = await fetchAgents(env);
-  if (!agents.ok) {
-    console.log(JSON.stringify({ event: "agents_unavailable", message: agents.message }));
-    return errorPage(CORE_MISCONFIGURED, 502);
-  }
-  if (!agents.agents.includes(data.agent)) {
+  if (!agents.includes(data.agent)) {
     console.log(JSON.stringify({ event: "agent_gone", agent: data.agent }));
-    return errorPage(`The mailbox "${data.agent}" is no longer configured. Start again and pick another.`, 400);
+    return errorPage(`The mailbox "${data.agent}" is no longer configured. Start again from the app you are connecting.`, 400);
   }
 
   const { redirectTo } = await oauth.completeAuthorization({

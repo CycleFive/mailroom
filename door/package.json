@@ -1,9 +1,9 @@
 {
   "name": "mailroom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
-  "description": "Public door for mailroom: OAuth sign-in with a mailbox picker, forwarding MCP to mailroom-core",
+  "description": "Public door for mailroom: an OAuth-protected MCP address per agent, forwarding MCP to mailroom-core",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
