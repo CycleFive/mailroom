@@ -52,7 +52,7 @@ A failed poll changes nothing and is visible in `mailbox_info`. It is never gues
 | --- | --- | --- | --- |
 | `mailroom` (the door, `door/`) | TypeScript | yes | the OAuth KV; no secrets |
 | `mailroom-core` (`crates/worker/`) | Rust | no | the inboxes |
-| `Feed` entrypoint in [discord-broker](https://github.com/CycleFive/discord-broker) and [github-broker](https://github.com/CycleFive/github-broker) | TypeScript | no | nothing new |
+| `Feed` entrypoint in [discord-broker](https://github.com/CycleFive/brokers/tree/master/brokers/discord) and [github-broker](https://github.com/CycleFive/brokers/tree/master/brokers/github) | TypeScript | no | nothing new |
 
 `crates/logic/` is the pure-Rust part (records, config, filters, pollers, MCP protocol).
 It has no Workers dependency, so its tests run with plain `cargo test`.
