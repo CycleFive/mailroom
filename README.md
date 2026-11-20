@@ -107,8 +107,8 @@ Tags the poller adds itself:
 | --- | --- |
 | `routed:mention` | Discord: the message mentions the agent's bot. GitHub: the text contains `@<app slug>`. |
 | `routed:reply` | Discord: the message replies to one of the bot's messages. |
-| `routed:assigned` | GitHub: the agent is an assignee, or a trusted person put `assigned:<tag>` on the item (see Work handed over by label). |
-| `routed:review` | GitHub: the PR carries `review_label` or the agent is a requested reviewer, or a trusted person put `review:<tag>` on the PR (see Work handed over by label). |
+| `routed:assigned` | GitHub: the agent is an assignee, or a trusted labeler put `assigned:<tag>` on the item (see Work handed over by label). |
+| `routed:review` | GitHub: the PR carries `review_label` or the agent is a requested reviewer, or a trusted labeler put `review:<tag>` on the PR (see Work handed over by label). |
 | `mine` | GitHub: a comment, review or event on an issue or PR the agent authored. |
 | `claimed` | GitHub: activity on an item handed to the agent by label (see Work handed over by label). |
 | `released` | GitHub: the closing note of such an item. Drop the claim. |
@@ -272,7 +272,10 @@ asking GitHub, so list only the agents that may hand work to this mailbox: whoev
 steer a listed agent can route work here. Entries are whole logins (`name` or `name[bot]`),
 matched in any case. Without the list, one agent cannot hand work to another. A mailbox
 that lists its own bot follows what that bot labels for itself, without a claim record
-(`skip_self`). A failed permission lookup fails the poll and is retried; it never decides
+(`skip_self`). Trust is decided when a label is applied: editing the list affects labels
+applied afterwards. Taking a login off the list does not take back work it already handed
+over (remove the label to do that), and adding one does not promote an item that already
+got `untrusted-label` (apply the label again). A failed permission lookup fails the poll and is retried; it never decides
 trust.
 
 Trust is decided per label, by the item's events and never by the search alone. For each

@@ -376,15 +376,33 @@ fn trusted_labelers_match_a_whole_login_in_any_case() {
 }
 
 #[test]
+fn trusted_labelers_accept_a_login_and_a_bot_login() {
+    let longest = "a".repeat(39);
+    let c = Config::parse(&github(&format!(
+        r#""labels":{{"org":"o","tag":"t","trusted_labelers":["a[bot]","b","{longest}","{longest}[bot]"]}}"#
+    )))
+    .unwrap();
+    assert_eq!(
+        github_source(&c).labels.clone().unwrap().trusted_labelers.len(),
+        4
+    );
+}
+
+#[test]
 fn trusted_labelers_are_checked() {
+    let forty = "a".repeat(40);
     for bad in [
         "",
         "has space",
         "x[bot]y",
         "a/b",
         "[bot]",
-        "name[BOT]extra",
+        "name[BOT]",
+        "a[bot][bot]",
         "trailing[bot] ",
+        "\u{e9}",
+        "\u{540d}[bot]",
+        forty.as_str(),
     ] {
         let e = err(&github(&format!(
             r#""labels":{{"org":"o","tag":"t","trusted_labelers":["{bad}"]}}"#

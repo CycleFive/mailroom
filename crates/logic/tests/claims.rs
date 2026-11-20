@@ -330,6 +330,75 @@ fn the_mailboxs_own_allowlisted_bot_claims_without_mail() {
 }
 
 #[test]
+fn an_allowlisted_bot_can_ask_for_review() {
+    let f = FakeFeed::strict();
+    search_items(&f, &[item_json(R, 4, U, &["review:claude"], true)]);
+    events(
+        &f,
+        R,
+        4,
+        &[labeled(510, "review:claude", "cycle-five-muse[bot]", L)],
+    );
+    comments_since(&f, R, 4, L, "[]");
+    f.on(
+        &format!("/repos/{R}/pulls/4/comments?since={L}&per_page=100&page=1"),
+        "[]",
+    );
+    f.on(&format!("/repos/{R}/pulls/4/reviews?per_page=100&page=1"), "[]");
+    let o = opts_trusting(&["cycle-five-muse[bot]"], true);
+    let p = run_with(&f, &o, None).unwrap();
+    assert_eq!(tags(the_claim_record(&p)), ["routed:review"]);
+    assert!(p.state.claims["CycleFive/kharon#4"].trusted);
+}
+
+#[test]
+fn a_relabel_by_an_allowlisted_bot_turns_an_untrusted_claim_trusted() {
+    let f = FakeFeed::strict();
+    let (u2, relabel) = ("2026-11-20T11:00:00Z", "2026-11-20T10:30:00Z");
+    search_items(&f, &[item_json(R, 7, u2, &["assigned:claude"], false)]);
+    events(
+        &f,
+        R,
+        7,
+        &[
+            labeled(500, "assigned:claude", "some-other-app[bot]", L),
+            labeled(600, "assigned:claude", "cycle-five-muse[bot]", relabel),
+        ],
+    );
+    comments_since(&f, R, 7, relabel, "[]");
+    let prev = state_of(vec![(KEY7, claim(false, U, U, &[("assigned:claude", 500)]))]);
+    let o = opts_trusting(&["cycle-five-muse[bot]"], true);
+    let p = run_with(&f, &o, Some(prev)).unwrap();
+    let r = the_claim_record(&p);
+    assert_eq!(r.id, "gh:CycleFive/kharon:claim:600");
+    assert_eq!(tags(r), ["routed:assigned"]);
+    assert!(p.state.claims[KEY7].trusted);
+}
+
+#[test]
+fn editing_the_list_does_not_touch_labels_already_handled() {
+    // Trust is decided when a label event is handled. A claim that was untrusted stays so
+    // after its labeler is added to the list, and a trusted one stays trusted after its
+    // labeler is taken off, until the label is applied again or removed.
+    for (stored, list) in [(false, vec!["cycle-five-muse[bot]"]), (true, vec![])] {
+        let f = FakeFeed::strict();
+        let u2 = "2026-11-20T11:00:00Z";
+        search_items(&f, &[item_json(R, 7, u2, &["assigned:claude"], false)]);
+        events(
+            &f,
+            R,
+            7,
+            &[labeled(500, "assigned:claude", "cycle-five-muse[bot]", L)],
+        );
+        comments_since(&f, R, 7, U, "[]");
+        let prev = state_of(vec![(KEY7, claim(stored, U, U, &[("assigned:claude", 500)]))]);
+        let p = run_with(&f, &opts_trusting(&list, true), Some(prev)).unwrap();
+        assert!(p.records.is_empty(), "{:?}", ids(&p.records));
+        assert_eq!(p.state.claims[KEY7].trusted, stored);
+    }
+}
+
+#[test]
 fn a_missing_labeler_is_untrusted() {
     let f = new_issue_feed("ghost");
     f.fail(&format!("/repos/{R}/collaborators/ghost/permission"), 404);

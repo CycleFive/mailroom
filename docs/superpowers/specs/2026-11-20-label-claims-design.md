@@ -107,7 +107,9 @@ repository, or when their login is in the source's `labels.trusted_labelers` (ad
 2026-11-20 at Lothrop's request, after an agent's review request by label turned up as
 untrusted: GitHub reports no role for an app, so this list is the only way an agent can
 hand work to another). A listed login is trusted for both labels without a lookup; entries
-are whole logins, `name` or `name[bot]`, matched in any case. Anything else is untrusted:
+are whole logins, `name` or `name[bot]`, matched in any case. Like a person's access, the
+list is consulted when a label event is handled: editing it changes nothing for labels
+already handled. Anything else is untrusted:
 a missing user (404), and any unlisted login that is not plain letters, digits and
 hyphens, which covers every other app and bot, without a lookup. Any
 other failure of the lookup fails the poll, which is retried; it never decides trust.
