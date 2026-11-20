@@ -112,7 +112,7 @@ Tags the poller adds itself:
 | `mine` | GitHub: a comment, review or event on an issue or PR the agent authored. |
 | `claimed` | GitHub: activity on an item handed to the agent by label (see Work handed over by label). |
 | `released` | GitHub: the closing note of such an item. Drop the claim. |
-| `untrusted-label` | GitHub: the label was applied by someone GitHub does not report as having triage, write, maintain or admin access to that repository, or by any app or bot. Not followed. |
+| `untrusted-label` | GitHub: the label was applied by someone GitHub does not report as having triage, write, maintain or admin access to that repository, or by an app or bot that is not in `labels.trusted_labelers`. Not followed. |
 
 Tags starting `routed:` are addressed to the agent. `mine` is activity on its own work.
 `claimed`, `released` and `untrusted-label` do not start with `routed:`, so they do not
@@ -171,7 +171,7 @@ tick, and unknown fields are rejected.
 | `repos` | required | `owner/name`. No duplicates. Not empty unless `labels` is set. |
 | `every_secs` | `300` | Minimum `60`. |
 | `review_label` | none | A label that means "review this". When set it must not be empty, and with `labels` it must not be `assigned:<tag>` or `review:<tag>` (in any case): those labels already route, with a trust check. |
-| `labels` | none | `{ "org": "your-org", "tag": "claude" }`. Also finds work handed over by label across the whole organisation; see Work handed over by label. `tag` is 1-32 characters of `a-z`, `0-9`, `-`. |
+| `labels` | none | `{ "org": "your-org", "tag": "claude" }`. Also finds work handed over by label across the whole organisation; see Work handed over by label. `tag` is 1-32 characters of `a-z`, `0-9`, `-`. Optional `trusted_labelers`: logins (`name` or `name[bot]`) whose labels count whatever access GitHub reports for them. |
 | `skip_self` | `true` | As above. |
 | `keep` | `"all"` | `"all"` or `"tagged"`. |
 | `rules` | `[]` | See below. |
@@ -259,10 +259,21 @@ shows the name as GitHub has it.
 **Who is trusted.** The label counts only when the person who applied it can write to the
 repository: GitHub reports their `permission` as `admin` or `write`, or their role as
 `admin`, `maintain`, `write` or `triage`. Anyone else, and anyone GitHub cannot find, is
-untrusted. A GitHub App's bot is never a trusted labeler (GitHub reports no access for
-it, and a login containing `[bot]` is untrusted without a lookup), so one agent cannot
-hand work to another. There is no allowlist. A failed permission lookup fails the poll
-and is retried; it never decides trust.
+untrusted. GitHub reports no access for a GitHub App's bot, so an app's label is untrusted
+(without a lookup) unless its login is listed in `trusted_labelers`:
+
+```jsonc
+"labels": { "org": "your-org", "tag": "claude",
+            "trusted_labelers": ["your-other-agent[bot]"] }
+```
+
+A listed login is trusted for both labels, in any repository of the organisation, without
+asking GitHub, so list only the agents that may hand work to this mailbox: whoever can
+steer a listed agent can route work here. Entries are whole logins (`name` or `name[bot]`),
+matched in any case. Without the list, one agent cannot hand work to another. A mailbox
+that lists its own bot follows what that bot labels for itself, without a claim record
+(`skip_self`). A failed permission lookup fails the poll and is retried; it never decides
+trust.
 
 Trust is decided per label, by the item's events and never by the search alone. For each
 label that the search shows, the newest `labeled` event decides, and it counts only if no

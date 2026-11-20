@@ -60,7 +60,9 @@
               // Optional: also search a whole organisation for open items labelled
               // "assigned:<tag>" or (pull requests only) "review:<tag>". With this set,
               // "repos" may be empty. org: GitHub login; tag: 1-32 chars of a-z, 0-9, '-'.
-              "labels": { "org": "your-org", "tag": "claude" }
+              // Optional "trusted_labelers": logins ("name" or "name[bot]") whose labels count
+              // whatever access GitHub reports; an app's bot is untrusted unless listed here.
+              "labels": { "org": "your-org", "tag": "claude", "trusted_labelers": ["your-other-agent[bot]"] }
             }
           ]
         },

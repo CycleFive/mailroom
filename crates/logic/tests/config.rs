@@ -351,3 +351,51 @@ fn target_works_for_a_source_without_repos() {
     ));
     assert_eq!(g.target("github:G:o/a"), None);
 }
+
+#[test]
+fn trusted_labelers_default_to_none() {
+    let c = Config::parse(&github(r#""labels":{"org":"o","tag":"t"}"#)).unwrap();
+    let l = github_source(&c).labels.clone().unwrap();
+    assert!(l.trusted_labelers.is_empty());
+    assert!(!l.trusts("cycle-five-muse[bot]"));
+}
+
+#[test]
+fn trusted_labelers_match_a_whole_login_in_any_case() {
+    let c = Config::parse(&github(
+        r#""labels":{"org":"o","tag":"t","trusted_labelers":["cycle-five-muse[bot]","some-person"]}"#,
+    ))
+    .unwrap();
+    let l = github_source(&c).labels.clone().unwrap();
+    assert!(l.trusts("cycle-five-muse[bot]"));
+    assert!(l.trusts("Cycle-Five-Muse[bot]"));
+    assert!(l.trusts("some-person"));
+    assert!(!l.trusts("cycle-five-muse"));
+    assert!(!l.trusts("cycle-five-muse[bot]x"));
+    assert!(!l.trusts(""));
+}
+
+#[test]
+fn trusted_labelers_are_checked() {
+    for bad in [
+        "",
+        "has space",
+        "x[bot]y",
+        "a/b",
+        "[bot]",
+        "name[BOT]extra",
+        "trailing[bot] ",
+    ] {
+        let e = err(&github(&format!(
+            r#""labels":{{"org":"o","tag":"t","trusted_labelers":["{bad}"]}}"#
+        )));
+        assert!(e.contains("labels.trusted_labelers"), "{bad:?}: {e}");
+    }
+    let e = err(&github(
+        r#""labels":{"org":"o","tag":"t","trusted_labelers":["a-bot[bot]","A-Bot[bot]"]}"#,
+    ));
+    assert!(
+        e.contains("labels.trusted_labelers") && e.contains("duplicate"),
+        "{e}"
+    );
+}

@@ -1,6 +1,6 @@
 {
   "name": "mailroom",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "MIT",
   "description": "Public door for mailroom: an OAuth-protected MCP address per agent, forwarding MCP to mailroom-core",
