@@ -30,6 +30,9 @@ const MAX_REQUESTS: usize = 60;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClaimsState {
     pub claims: BTreeMap<String, Claim>,
+    /// Items that were read and are not claims: key -> the `updated_at` they were skipped at.
+    #[serde(default)]
+    pub skipped: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,11 +200,11 @@ fn at_or_after(candidate: &str, reference: &str) -> bool {
 }
 
 /// A `gap` record for one list of one item.
-fn item_gap(repo: &str, n: u64, list: &str, title: String, now_epoch: i64) -> NewRecord {
+fn item_gap(repo: &str, n: u64, list: &str, title: String, stamp: &str, now_epoch: i64) -> NewRecord {
     NewRecord {
         src: Src::Github,
         kind: Kind::Gap,
-        id: format!("gh:gap:{list}:{repo}#{n}:{now_epoch}"),
+        id: format!("gh:gap:{list}:{repo}#{n}:{stamp}"),
         ts: iso(now_epoch),
         actor: String::new(),
         reference: format!("{repo}#{n}"),
@@ -271,6 +274,7 @@ pub async fn poll_claims(
 
     let prev = prev.unwrap_or_default();
     let mut claims = prev.claims.clone();
+    let mut skipped = prev.skipped.clone();
     let mut records: Vec<NewRecord> = Vec::new();
     if found.total_count > found.items.len() as u64 {
         records.push(NewRecord {
@@ -330,10 +334,9 @@ pub async fn poll_claims(
 
     let mut to_read: Vec<&Counted> = counted
         .iter()
-        .filter(|c| {
-            claims
-                .get(&c.key)
-                .is_none_or(|k| k.updated_at != c.item.updated_at)
+        .filter(|c| match claims.get(&c.key) {
+            Some(k) => k.updated_at != c.item.updated_at,
+            None => skipped.get(&c.key) != Some(&c.item.updated_at),
         })
         .collect();
     to_read.sort_by(|a, b| by_age((&a.item.updated_at, &a.key), (&b.item.updated_at, &b.key)));
@@ -354,8 +357,12 @@ pub async fn poll_claims(
                 n,
                 "events",
                 format!("events of {repo}#{n} are too many to read"),
+                &item.updated_at,
                 now_epoch,
             ));
+            if !claims.contains_key(&c.key) {
+                skipped.insert(c.key.clone(), item.updated_at.clone());
+            }
             continue;
         }
         let prior = claims.get(&c.key).cloned();
@@ -380,8 +387,13 @@ pub async fn poll_claims(
                     .as_ref()
                     .is_some_and(|l| l.name.eq_ignore_ascii_case(name))
         };
-        let mut live: Vec<(&str, &Event)> = Vec::new();
-        for (cfg, _) in &c.labels {
+        // The labels the events say are on: the newest `labeled` event, not cancelled.
+        let mut by_events: Vec<(&str, &Event)> = Vec::new();
+        let mut names = vec![assigned.as_str()];
+        if item.pull_request.is_some() {
+            names.push(review.as_str());
+        }
+        for cfg in names {
             let Some(on) = evs
                 .iter()
                 .filter(|e| named(e, "labeled", cfg))
@@ -392,10 +404,28 @@ pub async fn poll_claims(
             if evs.iter().any(|e| named(e, "unlabeled", cfg) && e.id > on.id) {
                 continue;
             }
-            live.push((cfg, on));
+            by_events.push((cfg, on));
         }
+        // They count only if the label is on the item. When the events say a label is on and
+        // the search does not list it, the item itself decides (one lookup per item).
+        let listed = |cfg: &str| c.labels.iter().any(|(l, _)| *l == cfg);
+        let looked: Option<Looked> = if by_events.iter().any(|(cfg, _)| !listed(cfg)) {
+            match get_json::<Looked>(feed, &format!("/repos/{repo}/issues/{n}"), &[]).await {
+                Ok(l) => Some(l),
+                Err(e) if bad_status(&e, &[404, 410]) => None,
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            None
+        };
+        let on_item = |cfg: &str| match &looked {
+            Some(l) => l.labels.iter().any(|x| x.name.eq_ignore_ascii_case(cfg)),
+            None => listed(cfg),
+        };
+        let live: Vec<(&str, &Event)> = by_events.into_iter().filter(|(cfg, _)| on_item(cfg)).collect();
         if live.is_empty() && is_new {
-            // Not a claim (yet): nothing is stored, so it is read again when it changes.
+            // Not a claim (yet): nothing is stored, and it is not read again until it changes.
+            skipped.insert(c.key.clone(), item.updated_at.clone());
             continue;
         }
 
@@ -467,6 +497,10 @@ pub async fn poll_claims(
                 .push(if ok { routed } else { "untrusted-label" }.to_string());
             records.push(r);
         }
+        // Only labels that count are kept: one that comes back needs a new event.
+        claim
+            .label_events
+            .retain(|name, _| live.iter().any(|(cfg, _)| cfg == name));
         let latest_label = claim.label_events.values().map(|l| l.id).max().unwrap_or(0);
         claim.reopened_event = evs
             .iter()
@@ -495,6 +529,8 @@ pub async fn poll_claims(
         // What happened on a trusted claim, unless the per-repo poll carries it. The poll in
         // which a claim becomes trusted reads it once either way.
         let turned = claim.trusted && !was_trusted;
+        // The reopen behind a claim record was mailed with it.
+        let behind_reopen = prior.as_ref().map_or(0, |p| p.reopened_event);
         let watched = opts.repos.iter().any(|r| r.eq_ignore_ascii_case(repo));
         if claim.trusted && (turned || !watched) {
             let since = if turned {
@@ -507,7 +543,11 @@ pub async fn poll_claims(
             };
             for e in evs.iter().filter(|e| at_or_after(&e.created_at, &since)) {
                 let own_label = named(e, "labeled", &assigned) || named(e, "labeled", &review);
-                if own_label || reopens_used.contains(&e.id) || ctx.skips(e.actor_login()) {
+                if own_label
+                    || reopens_used.contains(&e.id)
+                    || e.id == behind_reopen
+                    || ctx.skips(e.actor_login())
+                {
                     continue;
                 }
                 if let Some(r) = event_record(&ctx, e, n, &item.html_url, &item.user.login) {
@@ -526,6 +566,7 @@ pub async fn poll_claims(
                     n,
                     "comments",
                     format!("comments of {repo}#{n} may have skipped items"),
+                    &now_epoch.to_string(),
                     now_epoch,
                 ));
             }
@@ -548,6 +589,7 @@ pub async fn poll_claims(
                         n,
                         "review-comments",
                         format!("review comments of {repo}#{n} may have skipped items"),
+                        &now_epoch.to_string(),
                         now_epoch,
                     ));
                 }
@@ -576,6 +618,18 @@ pub async fn poll_claims(
         claim.updated_at = item.updated_at.clone();
         claim.since = item.updated_at.clone();
         claims.insert(c.key.clone(), claim);
+        skipped.remove(&c.key);
+    }
+    if !found.incomplete_results {
+        let listed: BTreeSet<String> = found
+            .items
+            .iter()
+            .filter_map(|i| {
+                let (_, repo) = i.repository_url.split_once("/repos/")?;
+                Some(format!("{repo}#{}", i.number))
+            })
+            .collect();
+        skipped.retain(|k, _| listed.contains(k));
     }
 
     // Claims the search no longer returns: closed, unlabelled, moved or gone, or the search lagged.
@@ -602,7 +656,7 @@ pub async fn poll_claims(
                     let here = l
                         .repository_url
                         .split_once("/repos/")
-                        .is_some_and(|(_, r)| r.eq_ignore_ascii_case(repo));
+                        .is_none_or(|(_, r)| r.eq_ignore_ascii_case(repo));
                     if !here {
                         "gone"
                     } else if l.state != "open" {
@@ -627,6 +681,6 @@ pub async fn poll_claims(
     records.sort_by_key(|r| epoch(&r.ts));
     Ok(Poll {
         records,
-        state: ClaimsState { claims },
+        state: ClaimsState { claims, skipped },
     })
 }
