@@ -142,6 +142,7 @@ fn state_of(entries: Vec<(&str, Claim)>) -> ClaimsState {
             .into_iter()
             .map(|(k, c)| (k.to_string(), c))
             .collect::<BTreeMap<_, _>>(),
+        ..ClaimsState::default()
     }
 }
 
@@ -775,7 +776,7 @@ fn a_label_event_missing_from_the_events_read_stores_the_claim_and_mails_nothing
     assert!(p.state.claims.is_empty());
     let before = f.calls().len();
     let again = run(&f, Some(p.state.clone()));
-    assert_eq!(f.calls().len(), before + 2, "{:?}", f.calls());
+    assert_eq!(f.calls().len(), before + 1, "{:?}", f.calls());
     assert_eq!(again.state, p.state);
 }
 
@@ -1169,7 +1170,7 @@ fn turning_trusted_moves_since_to_the_trusted_label() {
 }
 
 #[test]
-fn too_many_events_decide_nothing() {
+fn too_many_events_decide_nothing_and_are_reported_once() {
     let filler: Vec<String> = (1..=100)
         .map(|i| plain_event(i, "subscribed", "lothrop", S))
         .collect();
@@ -1178,7 +1179,7 @@ fn too_many_events_decide_nothing() {
             events_page(f, R, 7, page, &filler);
         }
     };
-    let gap_id = format!("gh:gap:events:{R}#7:{}", epoch(NOW).unwrap());
+    let gap_id = format!("gh:gap:events:{R}#7:{U}");
 
     // A new item: not stored.
     let f = FakeFeed::strict();
@@ -1191,6 +1192,12 @@ fn too_many_events_decide_nothing() {
     assert_eq!(r.title, format!("events of {R}#7 are too many to read"));
     assert_eq!(r.reference, format!("{R}#7"));
     assert!(p.state.claims.is_empty());
+
+    // Reported once: the same item, unchanged, is not read again.
+    let calls = f.calls().len();
+    let again = run(&f, Some(p.state.clone()));
+    assert!(again.records.is_empty(), "{:?}", ids(&again.records));
+    assert_eq!(f.calls().len(), calls + 1, "{:?}", f.calls());
 
     // A stored item: left exactly as it was.
     let g = FakeFeed::strict();
@@ -1383,4 +1390,186 @@ fn a_renamed_repository_in_another_case_is_still_the_same_item() {
     );
     let p = released(&f);
     assert!(p.records.is_empty());
+}
+
+fn two_label_pr_search(f: &FakeFeed, labels: &[&str]) -> &'static str {
+    let u2 = "2026-11-20T11:00:00Z";
+    search_items(f, &[item_json(R, 4, u2, labels, true)]);
+    u2
+}
+
+const KEY4: &str = "CycleFive/kharon#4";
+
+fn both_labels_on_events() -> [String; 2] {
+    [
+        labeled(500, "assigned:claude", "lothrop", S),
+        labeled(510, "review:claude", "helper[bot]", "2026-11-20T08:10:00Z"),
+    ]
+}
+
+#[test]
+fn a_label_the_search_does_not_list_is_checked_on_the_item() {
+    let f = FakeFeed::strict();
+    two_label_pr_search(&f, &["review:claude"]);
+    events(&f, R, 4, &both_labels_on_events());
+    item_reply(&f, 4, "open", &["assigned:claude", "review:claude"]);
+    comments_since(&f, R, 4, S, "[]");
+    pr_quiet(&f, 4, S);
+    let prev = state_of(vec![(KEY4, pr_claim_with_two_labels())]);
+    let p = run(&f, Some(prev));
+    assert!(p.records.is_empty(), "{:?}", ids(&p.records));
+    assert!(p.state.claims[KEY4].trusted);
+    assert_eq!(p.state.claims[KEY4].label_events.len(), 2);
+    let lookups = f
+        .calls()
+        .iter()
+        .filter(|c| c.as_str() == format!("/repos/{R}/issues/4"))
+        .count();
+    assert_eq!(lookups, 1, "{:?}", f.calls());
+}
+
+#[test]
+fn a_label_really_removed_drops_its_entry() {
+    let f = FakeFeed::strict();
+    two_label_pr_search(&f, &["review:claude"]);
+    let mut evs = both_labels_on_events().to_vec();
+    evs.push(unlabeled(
+        520,
+        "assigned:claude",
+        "lothrop",
+        "2026-11-20T10:30:00Z",
+    ));
+    events(&f, R, 4, &evs);
+    item_reply(&f, 4, "open", &["review:claude"]);
+    let prev = state_of(vec![(KEY4, pr_claim_with_two_labels())]);
+    let p = run(&f, Some(prev));
+    let r = the_claim_record(&p);
+    assert_eq!(r.title, "released: label removed");
+    let c = &p.state.claims[KEY4];
+    assert!(!c.trusted);
+    assert_eq!(c.label_events.keys().collect::<Vec<_>>(), ["review:claude"]);
+}
+
+#[test]
+fn closing_notes_never_reuse_an_id() {
+    // 1. The trusted label goes: the note carries the latest id the claim held (510).
+    let f = FakeFeed::strict();
+    two_label_pr_search(&f, &["review:claude"]);
+    let mut evs = both_labels_on_events().to_vec();
+    evs.push(unlabeled(
+        520,
+        "assigned:claude",
+        "lothrop",
+        "2026-11-20T10:30:00Z",
+    ));
+    events(&f, R, 4, &evs);
+    let prev = state_of(vec![(KEY4, pr_claim_with_two_labels())]);
+    let p = run(&f, Some(prev));
+    assert_eq!(the_claim_record(&p).id, "gh:CycleFive/kharon:release:4:510");
+
+    // 2. A trusted person labels again (600): a new claim record.
+    let g = FakeFeed::strict();
+    search_items(
+        &g,
+        &[item_json(
+            R,
+            4,
+            "2026-11-20T11:30:00Z",
+            &["assigned:claude", "review:claude"],
+            true,
+        )],
+    );
+    evs.push(labeled(600, "assigned:claude", "lothrop", "2026-11-20T11:10:00Z"));
+    events(&g, R, 4, &evs);
+    admin(&g, "lothrop");
+    comments_since(&g, R, 4, "2026-11-20T11:10:00Z", "[]");
+    pr_quiet(&g, 4, "2026-11-20T11:10:00Z");
+    let q = run(&g, Some(p.state));
+    assert_eq!(ids(&q.records), ["gh:CycleFive/kharon:claim:600"]);
+
+    // 3. The item closes: the note ends in 600, not 510.
+    let h = FakeFeed::strict();
+    item_reply(&h, 4, "closed", &["assigned:claude"]);
+    search_items(&h, &[]);
+    let r = run(&h, Some(q.state));
+    assert_eq!(the_claim_record(&r).id, "gh:CycleFive/kharon:release:4:600");
+}
+
+#[test]
+fn a_skipped_item_is_not_read_again_until_it_changes() {
+    let f = FakeFeed::strict();
+    search_items(&f, &[item_json(R, 7, U, &["assigned:claude"], false)]);
+    events(
+        &f,
+        R,
+        7,
+        &[
+            labeled(500, "assigned:claude", "lothrop", S),
+            unlabeled(510, "assigned:claude", "lothrop", L),
+        ],
+    );
+    let p = run(&f, None);
+    assert!(p.state.claims.is_empty());
+    assert_eq!(p.state.skipped[KEY7], U);
+
+    let calls = f.calls().len();
+    let again = run(&f, Some(p.state.clone()));
+    assert_eq!(f.calls().len(), calls + 1, "{:?}", f.calls());
+    assert_eq!(again.state, p.state);
+
+    let u2 = "2026-11-20T11:00:00Z";
+    search_items(&f, &[item_json(R, 7, u2, &["assigned:claude"], false)]);
+    let calls = f.calls().len();
+    let third = run(&f, Some(p.state));
+    assert_eq!(f.calls().len(), calls + 2, "{:?}", f.calls());
+    assert_eq!(third.state.skipped[KEY7], u2);
+}
+
+#[test]
+fn a_skipped_item_that_becomes_a_claim_leaves_the_skipped_list() {
+    let f = new_issue_feed("lothrop");
+    admin(&f, "lothrop");
+    let mut prev = ClaimsState::default();
+    prev.skipped.insert(KEY7.into(), "2026-11-20T08:00:00Z".into());
+    let p = run(&f, Some(prev));
+    assert!(p.state.claims.contains_key(KEY7));
+    assert!(p.state.skipped.is_empty());
+}
+
+#[test]
+fn skipped_items_no_longer_listed_are_forgotten() {
+    let mut prev = ClaimsState::default();
+    prev.skipped.insert(KEY7.into(), U.into());
+    prev.skipped.insert("CycleFive/kharon#9".into(), U.into());
+    let f = FakeFeed::strict();
+    search_items(&f, &[item_json(R, 7, U, &["assigned:claude"], false)]);
+    let p = run(&f, Some(prev.clone()));
+    assert_eq!(p.state.skipped.keys().collect::<Vec<_>>(), [KEY7]);
+    // An incomplete search says nothing about what is missing.
+    let g = FakeFeed::strict();
+    search(&g, 0, true, &[]);
+    assert_eq!(run(&g, Some(prev.clone())).state, prev);
+}
+
+#[test]
+fn the_reopen_behind_a_claim_is_never_mailed_as_activity() {
+    let (f, mut prev) = followed_feed(&[reopened(900, REOPENED)]);
+    let c = prev.claims.get_mut(KEY7).unwrap();
+    c.since = REOPENED.into();
+    c.reopened_event = 900;
+    comments_since(&f, R, 7, REOPENED, "[]");
+    let p = run(&f, Some(prev));
+    assert!(p.records.is_empty(), "{:?}", ids(&p.records));
+}
+
+#[test]
+fn a_missing_repository_url_means_the_same_repository() {
+    let f = FakeFeed::strict();
+    f.on(
+        &format!("/repos/{R}/issues/7"),
+        r#"{"state":"open","title":"Item 7","html_url":"https://gh/x","labels":[{"name":"assigned:claude"}]}"#,
+    );
+    let p = released(&f);
+    assert!(p.records.is_empty());
+    assert_eq!(p.state, stored(true));
 }
