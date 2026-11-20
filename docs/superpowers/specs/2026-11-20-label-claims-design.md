@@ -93,38 +93,67 @@ the source, named `github:<broker>:labels:<org>`, on the source's `every_secs`.
 ### Which items count
 
 An open item counts when it carries `assigned:<tag>` (issue or pull request), or carries
-`review:<tag>` and is a pull request. A counted item the mailbox is tracking is a *claim*.
+`review:<tag>` and is a pull request, and the item's own events agree: the label's newest
+`labeled` event is not followed by an `unlabeled` event for the same name, and the label
+is on the item. The search can be behind; the events are not. When the events say a label
+is on and the search's list for that item does not show it, the item itself is read and
+its labels are used. Label and repository names are compared without regard to
+case, as GitHub does. A counted item the mailbox is tracking is a *claim*.
 
 ### Trust
 
 The labeler of a `labeled` event is trusted when GitHub reports `permission` `admin` or
 `write`, or `role_name` `admin`, `maintain`, `write` or `triage`, for them on that
-repository. Anything else, including a missing user (404), is untrusted. Any other
-failure of the lookup fails the poll, which is retried; it never decides trust.
+repository. Anything else is untrusted: a missing user (404), and any login that is not
+plain letters, digits and hyphens, which covers every app and bot, without a lookup. Any
+other failure of the lookup fails the poll, which is retried; it never decides trust.
+
+Trust is kept per label and follows that label's newest `labeled` event. A claim is
+trusted exactly when one of the labels counting on it now was last applied by a trusted
+labeler. A claim that loses that (its trusted label is removed while a bot's remains, or
+is removed and put back by someone untrusted) is released with a closing note and kept as
+an untrusted claim.
 
 ### One poll of the labels target
 
 1. Search open items with either label, newest update first, 100 per page, one page. More
    than 100 matches produces a `gap` record.
-2. For each counted item that is new, or whose `updated_at` differs from the stored one
-   (at most 20 per poll, the longest-waiting first; the rest wait for the next poll):
-   - Read the item's events. For each `labeled` event for one of the two labels that the
-     claim has not seen and whose label is still on the item: check the labeler's trust
-     and write the *claim record* (below). A claim is trusted once any of its label
-     events was trusted.
+2. For each item the search lists that is new, or whose `updated_at` differs from the
+   stored one (at most 20 per poll, the longest-waiting first, and none once the poll has
+   made 60 requests after the search; the rest wait for the next poll):
+   - Read the item's events (pages of 100, at most ten). If all ten are full the newest
+     events are missing, so nothing is decided: the item is skipped with a `gap` record.
+   - For each counting label whose newest `labeled` event the claim has not handled:
+     check the labeler's trust and write the *claim record* (below).
    - If the claim is trusted and its repository is not one of the source's `repos`,
-     write the item's new activity since the claim's marks: events, comments, and for a
-     pull request review comments and reviews, in the same form and with the same record
-     ids as the per-repo poll, each tagged `claimed`. A claim's marks start at what
-     exists when it is first seen, so nothing older than the claim is mailed.
-   - If the repository is one of the source's `repos`, the per-repo poll carries the
-     activity and tags it `claimed` (it is given the claimed item numbers).
+     write the item's new activity since the claim's mark: events, comments, and for a
+     pull request review comments and reviews (all paged, with a `gap` record when cut),
+     in the same form and with the same record ids as the per-repo poll, each tagged
+     `claimed`. A new claim's mark is the time of the trusted label event (or of the
+     reopen, below), so what was said right after the hand-over is mailed and nothing
+     before it; an untrusted label never moves the mark back.
+   - If the repository is one of the source's `repos`, the same is done once, in the
+     poll where the claim becomes trusted; after that the per-repo poll carries the
+     activity and tags it `claimed` (it is given the claimed item numbers). Without that
+     first read, a comment made in the same few minutes as the label would be dropped
+     by `keep: "tagged"` before the repo poll knew of the claim.
 3. For each stored claim that the search no longer returns, unless the search said
-   `incomplete_results`: read the item itself. If it is closed, or carries neither label,
-   or is gone, drop the claim and, if it was trusted, write the *closing note*. If it is
-   still open and labelled, keep the claim: the search was behind.
+   `incomplete_results` (at most 20 per poll, within the same request budget): read the
+   item itself. If it is closed, or no label counts on it, or it is gone or now lives in
+   another repository, drop the claim and, if it was trusted, write the *closing note*.
+   If it is still open and labelled, keep the claim: the search was behind.
 4. The very first poll treats every labelled item as new, so standing assignments are
    mailed once at rollout.
+
+An item that is read and turns out not to be a claim (no label counts, or its events could
+not all be read) is remembered with its `updated_at` and not read again until that
+changes, so such items cannot crowd out the others. A label entry is kept only while its
+label counts, so a label that comes back needs a new `labeled` event, and a closing
+note's id cannot repeat.
+
+A source's `review_label` may not be one of its two label names: the per-repo poll routes
+`review_label` without asking who applied it. Target keys are unique across an agent's
+sources.
 
 ### Records
 
@@ -170,6 +199,7 @@ broker; a new mailroom against an old broker would only fail the labels target.
   watched repository the plain `labeled` event may also appear as context. A shared id
   would let whichever poll ran first decide whether the record carries the `routed:` tag.
 - An untrusted claim is not followed and gets no closing note.
+- A request failure on one item fails the whole labels poll; it is not skipped. `mailbox_info` shows the error.
 - When one of two labels is removed and the other stays, nothing is mailed.
 - At most 20 changed items are read per poll and one search page of 100.
 - The door's version moves to 0.3.0 with the core, with no change in behaviour.
