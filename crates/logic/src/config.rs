@@ -57,7 +57,11 @@ pub struct GithubSource {
     pub broker: String,
     #[serde(default = "default_github_every")]
     pub every_secs: u32,
+    #[serde(default)]
     pub repos: Vec<String>,
+    /// Also search a whole organisation for items labelled `assigned:<tag>` / `review:<tag>`.
+    #[serde(default)]
+    pub labels: Option<LabelRouting>,
     #[serde(default)]
     pub review_label: Option<String>,
     #[serde(default = "default_true")]
@@ -66,6 +70,34 @@ pub struct GithubSource {
     pub keep: Keep,
     #[serde(default)]
     pub rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LabelRouting {
+    /// The GitHub organisation to search.
+    pub org: String,
+    /// The tag in `assigned:<tag>` and `review:<tag>`.
+    pub tag: String,
+}
+
+impl LabelRouting {
+    pub fn assigned(&self) -> String {
+        format!("assigned:{}", self.tag)
+    }
+
+    pub fn review(&self) -> String {
+        format!("review:{}", self.tag)
+    }
+}
+
+impl GithubSource {
+    /// "github:<broker>:labels:<org>" when `labels` is set.
+    pub fn labels_key(&self) -> Option<String> {
+        self.labels
+            .as_ref()
+            .map(|l| format!("github:{}:labels:{}", self.broker, l.org))
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -206,8 +238,28 @@ fn validate_source(agent: &str, index: usize, source: &SourceConfig) -> Result<(
             }
         }
         SourceConfig::Github(g) => {
-            if g.repos.is_empty() {
-                return fail("repos", "must not be empty".into());
+            if g.repos.is_empty() && g.labels.is_none() {
+                return fail("repos", "must not be empty unless labels is set".into());
+            }
+            if let Some(l) = &g.labels {
+                let org_ok = (1..=39).contains(&l.org.len())
+                    && l.org.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+                if !org_ok {
+                    return fail(
+                        "labels.org",
+                        format!("{:?} must be 1-39 chars of A-Z, a-z, 0-9, '-'", l.org),
+                    );
+                }
+                let tag_ok = (1..=32).contains(&l.tag.len())
+                    && l.tag
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+                if !tag_ok {
+                    return fail(
+                        "labels.tag",
+                        format!("{:?} must be 1-32 chars of a-z, 0-9, '-'", l.tag),
+                    );
+                }
             }
             for r in &g.repos {
                 let ok = matches!(r.split_once('/'), Some((o, n)) if !o.is_empty() && !n.is_empty() && !n.contains('/'));
@@ -267,7 +319,8 @@ impl SourceConfig {
         }
     }
 
-    /// "discord:<broker>:<channel>" or "github:<broker>:<owner>/<repo>", in config order.
+    /// "discord:<broker>:<channel>" or "github:<broker>:<owner>/<repo>", in config order;
+    /// a GitHub source with `labels` ends with "github:<broker>:labels:<org>".
     pub fn target_keys(&self) -> Vec<String> {
         match self {
             SourceConfig::Discord(d) => d
@@ -279,6 +332,7 @@ impl SourceConfig {
                 .repos
                 .iter()
                 .map(|r| format!("github:{}:{r}", g.broker))
+                .chain(g.labels_key())
                 .collect(),
         }
     }
