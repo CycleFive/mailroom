@@ -1,5 +1,6 @@
 //! Pure-Rust logic for mailroom: records, time helpers and configuration.
 
+pub mod claims;
 pub mod config;
 pub mod discord;
 pub mod feed;
