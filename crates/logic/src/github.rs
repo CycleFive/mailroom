@@ -39,15 +39,15 @@ pub struct GithubState {
 }
 
 #[derive(Deserialize, Default)]
-struct User {
+pub(crate) struct User {
     #[serde(default)]
-    login: String,
+    pub(crate) login: String,
 }
 
 #[derive(Deserialize)]
-struct Label {
+pub(crate) struct Label {
     #[serde(default)]
-    name: String,
+    pub(crate) name: String,
 }
 
 /// An entry of `/issues` or `/pulls`; the fields not present on one are defaulted.
@@ -77,35 +77,35 @@ struct Item {
 }
 
 #[derive(Deserialize)]
-struct Comment {
-    id: u64,
+pub(crate) struct Comment {
+    pub(crate) id: u64,
     #[serde(default)]
-    body: Option<String>,
+    pub(crate) body: Option<String>,
     #[serde(default)]
-    html_url: String,
+    pub(crate) html_url: String,
     #[serde(default)]
-    issue_url: String,
+    pub(crate) issue_url: String,
     #[serde(default)]
-    pull_request_url: String,
+    pub(crate) pull_request_url: String,
     #[serde(default)]
-    created_at: String,
+    pub(crate) created_at: String,
     #[serde(default)]
-    user: User,
+    pub(crate) user: User,
 }
 
 #[derive(Deserialize)]
-struct Review {
-    id: u64,
+pub(crate) struct Review {
+    pub(crate) id: u64,
     #[serde(default)]
-    state: String,
+    pub(crate) state: String,
     #[serde(default)]
-    body: Option<String>,
+    pub(crate) body: Option<String>,
     #[serde(default)]
-    html_url: String,
+    pub(crate) html_url: String,
     #[serde(default)]
-    submitted_at: Option<String>,
+    pub(crate) submitted_at: Option<String>,
     #[serde(default)]
-    user: User,
+    pub(crate) user: User,
 }
 
 #[derive(Deserialize)]
@@ -118,20 +118,20 @@ struct EventIssue {
 }
 
 #[derive(Deserialize)]
-struct Event {
-    id: u64,
+pub(crate) struct Event {
+    pub(crate) id: u64,
     #[serde(default)]
-    event: String,
+    pub(crate) event: String,
     #[serde(default)]
-    created_at: String,
+    pub(crate) created_at: String,
     #[serde(default)]
-    actor: Option<User>,
+    pub(crate) actor: Option<User>,
     #[serde(default)]
-    assignee: Option<User>,
+    pub(crate) assignee: Option<User>,
     #[serde(default)]
-    label: Option<Label>,
+    pub(crate) label: Option<Label>,
     #[serde(default)]
-    requested_reviewer: Option<User>,
+    pub(crate) requested_reviewer: Option<User>,
     #[serde(default)]
     issue: Option<EventIssue>,
 }
@@ -141,25 +141,49 @@ fn trailing_number(url: &str) -> Option<u64> {
     url.rsplit('/').next()?.parse().ok()
 }
 
-fn excerpt(body: &Option<String>) -> String {
+pub(crate) fn excerpt(body: &Option<String>) -> String {
     truncate(body.as_deref().unwrap_or("").trim(), BODY_MAX, BODY_SUFFIX)
 }
 
 /// Whether `candidate` is strictly later than `reference`; unparsable means not newer.
-fn newer(candidate: &str, reference: &str) -> bool {
+pub(crate) fn newer(candidate: &str, reference: &str) -> bool {
     matches!((epoch(candidate), epoch(reference)), (Some(c), Some(r)) if c > r)
 }
 
-struct Ctx<'a> {
-    repo: &'a str,
-    bot: &'a str,
+pub(crate) struct Ctx<'a> {
+    pub(crate) repo: &'a str,
+    pub(crate) bot: &'a str,
+    skip_self: bool,
     mention: String,
     review_label: Option<&'a str>,
-    mine_numbers: Vec<u64>,
+    pub(crate) mine_numbers: Vec<u64>,
 }
 
-impl Ctx<'_> {
-    fn mentions_me(&self, body: &Option<String>) -> bool {
+impl<'a> Ctx<'a> {
+    pub(crate) fn new(
+        repo: &'a str,
+        me: &'a Identity,
+        opts: &'a GithubSource,
+        mine_numbers: Vec<u64>,
+    ) -> Self {
+        let bot = me.login.as_str();
+        let slug = bot.strip_suffix("[bot]").unwrap_or(bot);
+        Ctx {
+            repo,
+            bot,
+            skip_self: opts.skip_self,
+            mention: format!("@{slug}").to_lowercase(),
+            review_label: opts.review_label.as_deref(),
+            mine_numbers,
+        }
+    }
+
+    /// Whether nothing by `login` is to be mailed (the bot's own doing, with `skip_self`).
+    pub(crate) fn skips(&self, login: &str) -> bool {
+        self.skip_self && login == self.bot
+    }
+
+    pub(crate) fn mentions_me(&self, body: &Option<String>) -> bool {
         body.as_deref()
             .is_some_and(|b| b.to_lowercase().contains(&self.mention))
     }
@@ -168,7 +192,7 @@ impl Ctx<'_> {
         self.review_label == Some(name)
     }
 
-    fn record(&self, kind: Kind, id: String, ts: &str, actor: &str, number: u64) -> NewRecord {
+    pub(crate) fn record(&self, kind: Kind, id: String, ts: &str, actor: &str, number: u64) -> NewRecord {
         NewRecord {
             src: Src::Github,
             kind,
@@ -184,8 +208,116 @@ impl Ctx<'_> {
     }
 }
 
+/// The record for an issue comment on item `number`.
+pub(crate) fn issue_comment_record(ctx: &Ctx, c: &Comment, number: u64) -> NewRecord {
+    let mut r = ctx.record(
+        Kind::IssueComment,
+        format!("issue_comment:{}", c.id),
+        &c.created_at,
+        &c.user.login,
+        number,
+    );
+    r.body = excerpt(&c.body);
+    r.url = c.html_url.clone();
+    if ctx.mine_numbers.contains(&number) {
+        r.tags.push("mine".to_string());
+    }
+    if ctx.mentions_me(&c.body) {
+        r.tags.push("routed:mention".to_string());
+    }
+    r
+}
+
+/// The record for a review comment on pull request `number`.
+pub(crate) fn review_comment_record(ctx: &Ctx, c: &Comment, number: u64) -> NewRecord {
+    let mut r = ctx.record(
+        Kind::ReviewComment,
+        format!("review_comment:{}", c.id),
+        &c.created_at,
+        &c.user.login,
+        number,
+    );
+    r.body = excerpt(&c.body);
+    r.url = c.html_url.clone();
+    if ctx.mine_numbers.contains(&number) {
+        r.tags.push("mine".to_string());
+    }
+    if ctx.mentions_me(&c.body) {
+        r.tags.push("routed:mention".to_string());
+    }
+    r
+}
+
+/// The record for a review (submitted at `submitted`) of pull request `number` by `author`.
+pub(crate) fn review_record(ctx: &Ctx, v: &Review, submitted: &str, number: u64, author: &str) -> NewRecord {
+    let mut r = ctx.record(
+        Kind::Review,
+        format!("review:{}", v.id),
+        submitted,
+        &v.user.login,
+        number,
+    );
+    r.title = v.state.clone();
+    r.body = excerpt(&v.body);
+    r.url = v.html_url.clone();
+    if author == ctx.bot {
+        r.tags.push("mine".to_string());
+    }
+    if ctx.mentions_me(&v.body) {
+        r.tags.push("routed:mention".to_string());
+    }
+    r
+}
+
+impl Event {
+    pub(crate) fn actor_login(&self) -> &str {
+        self.actor.as_ref().map_or("", |a| a.login.as_str())
+    }
+}
+
+/// The record for an event on item `number` (at `url`, opened by `author`); `None` for
+/// event kinds that are not mailed.
+pub(crate) fn event_record(ctx: &Ctx, e: &Event, number: u64, url: &str, author: &str) -> Option<NewRecord> {
+    if !EVENT_KINDS.contains(&e.event.as_str()) {
+        return None;
+    }
+    let actor = e.actor_login();
+    let named = |u: &Option<User>| u.as_ref().map_or(String::new(), |u| u.login.clone());
+    let title = match e.event.as_str() {
+        "assigned" => format!("assigned {}", named(&e.assignee)),
+        "labeled" => format!("labeled {}", e.label.as_ref().map_or("", |l| l.name.as_str())),
+        "review_requested" => format!("review_requested {}", named(&e.requested_reviewer)),
+        other => other.to_string(),
+    };
+    let mut r = ctx.record(
+        Kind::Event,
+        format!("event:{}", e.id),
+        &e.created_at,
+        actor,
+        number,
+    );
+    r.title = title;
+    r.url = url.to_string();
+    let routed_assigned = e.event == "assigned" && e.assignee.as_ref().is_some_and(|a| a.login == ctx.bot);
+    let routed_review = match e.event.as_str() {
+        "labeled" => e.label.as_ref().is_some_and(|l| ctx.has_review_label(&l.name)),
+        "review_requested" => e.requested_reviewer.as_ref().is_some_and(|u| u.login == ctx.bot),
+        _ => false,
+    };
+    if routed_assigned {
+        r.tags.push("routed:assigned".to_string());
+    }
+    if routed_review {
+        r.tags.push("routed:review".to_string());
+    }
+    if author == ctx.bot {
+        r.tags.push("mine".to_string());
+    }
+    Some(r)
+}
+
 /// A `gap` record: `list` of `repo` may have skipped items.
-fn gap_record(repo: &str, list: &str, now_epoch: i64) -> NewRecord {
+pub(crate) fn gap_record(repo: &str, list: &str, now_epoch: i64) -> NewRecord {
     NewRecord {
         src: Src::Github,
         kind: Kind::Gap,
@@ -260,20 +392,14 @@ pub async fn poll_repo(
     let issues: Vec<&Item> = issues.iter().filter(|i| i.pull_request.is_none()).collect();
 
     let bot = me.login.as_str();
-    let slug = bot.strip_suffix("[bot]").unwrap_or(bot);
-    let ctx = Ctx {
-        repo,
-        bot,
-        mention: format!("@{slug}").to_lowercase(),
-        review_label: opts.review_label.as_deref(),
-        mine_numbers: issues
-            .iter()
-            .copied()
-            .chain(pulls.iter())
-            .filter(|i| i.user.login == bot)
-            .map(|i| i.number)
-            .collect(),
-    };
+    let mine: Vec<u64> = issues
+        .iter()
+        .copied()
+        .chain(pulls.iter())
+        .filter(|i| i.user.login == bot)
+        .map(|i| i.number)
+        .collect();
+    let ctx = Ctx::new(repo, me, opts, mine);
 
     let max_of = |it: &mut dyn Iterator<Item = u64>| it.max().unwrap_or(0);
     let seen_issue = max_of(&mut issues.iter().map(|i| i.number));
@@ -338,7 +464,7 @@ pub async fn poll_repo(
             records.push(gap_record(repo, list, now_epoch));
         }
     }
-    let skip = |login: &str| opts.skip_self && login == ctx.bot;
+    let skip = |login: &str| ctx.skips(login);
 
     for i in issues.iter().filter(|i| i.number > prev.last_issue_number) {
         if skip(&i.user.login) {
@@ -399,22 +525,7 @@ pub async fn poll_repo(
             continue;
         }
         let number = trailing_number(&c.issue_url).unwrap_or(0);
-        let mut r = ctx.record(
-            Kind::IssueComment,
-            format!("issue_comment:{}", c.id),
-            &c.created_at,
-            &c.user.login,
-            number,
-        );
-        r.body = excerpt(&c.body);
-        r.url = c.html_url.clone();
-        if ctx.mine_numbers.contains(&number) {
-            r.tags.push("mine".to_string());
-        }
-        if ctx.mentions_me(&c.body) {
-            r.tags.push("routed:mention".to_string());
-        }
-        records.push(r);
+        records.push(issue_comment_record(&ctx, c, number));
     }
 
     for c in review_comments
@@ -425,22 +536,7 @@ pub async fn poll_repo(
             continue;
         }
         let number = trailing_number(&c.pull_request_url).unwrap_or(0);
-        let mut r = ctx.record(
-            Kind::ReviewComment,
-            format!("review_comment:{}", c.id),
-            &c.created_at,
-            &c.user.login,
-            number,
-        );
-        r.body = excerpt(&c.body);
-        r.url = c.html_url.clone();
-        if ctx.mine_numbers.contains(&number) {
-            r.tags.push("mine".to_string());
-        }
-        if ctx.mentions_me(&c.body) {
-            r.tags.push("routed:mention".to_string());
-        }
-        records.push(r);
+        records.push(review_comment_record(&ctx, c, number));
     }
 
     for p in pulls.iter().filter(|p| newer(&p.updated_at, &prev.last_check_at)) {
@@ -468,67 +564,18 @@ pub async fn poll_repo(
             if !newer(submitted, &prev.last_check_at) || skip(&v.user.login) {
                 continue;
             }
-            let mut r = ctx.record(
-                Kind::Review,
-                format!("review:{}", v.id),
-                submitted,
-                &v.user.login,
-                p.number,
-            );
-            r.title = v.state.clone();
-            r.body = excerpt(&v.body);
-            r.url = v.html_url.clone();
-            if p.user.login == bot {
-                r.tags.push("mine".to_string());
-            }
-            if ctx.mentions_me(&v.body) {
-                r.tags.push("routed:mention".to_string());
-            }
-            records.push(r);
+            records.push(review_record(&ctx, v, submitted, p.number, &p.user.login));
         }
     }
 
     for e in events.iter().filter(|e| e.id > prev.last_event_id) {
-        if !EVENT_KINDS.contains(&e.event.as_str()) {
-            continue;
-        }
         let Some(issue) = &e.issue else { continue };
-        let actor = e.actor.as_ref().map_or("", |a| a.login.as_str());
-        if skip(actor) {
+        if skip(e.actor_login()) {
             continue;
         }
-        let named = |u: &Option<User>| u.as_ref().map_or(String::new(), |u| u.login.clone());
-        let title = match e.event.as_str() {
-            "assigned" => format!("assigned {}", named(&e.assignee)),
-            "labeled" => format!("labeled {}", e.label.as_ref().map_or("", |l| l.name.as_str())),
-            "review_requested" => format!("review_requested {}", named(&e.requested_reviewer)),
-            other => other.to_string(),
-        };
-        let mut r = ctx.record(
-            Kind::Event,
-            format!("event:{}", e.id),
-            &e.created_at,
-            actor,
-            issue.number,
-        );
-        r.title = title;
-        r.url = issue.html_url.clone();
-        let routed_assigned = e.event == "assigned" && e.assignee.as_ref().is_some_and(|a| a.login == bot);
-        let routed_review = match e.event.as_str() {
-            "labeled" => e.label.as_ref().is_some_and(|l| ctx.has_review_label(&l.name)),
-            "review_requested" => e.requested_reviewer.as_ref().is_some_and(|u| u.login == bot),
-            _ => false,
-        };
-        if routed_assigned {
-            r.tags.push("routed:assigned".to_string());
+        if let Some(r) = event_record(&ctx, e, issue.number, &issue.html_url, &issue.user.login) {
+            records.push(r);
         }
-        if routed_review {
-            r.tags.push("routed:review".to_string());
-        }
-        if issue.user.login == bot {
-            r.tags.push("mine".to_string());
-        }
-        records.push(r);
     }
 
     // Stable: ties keep the table's order.
