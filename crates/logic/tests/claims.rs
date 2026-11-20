@@ -129,6 +129,7 @@ fn claim(trusted: bool, since: &str, updated: &str, labels: &[(&str, u64)]) -> C
         since: since.into(),
         label_events: labels.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         trusted,
+        reopened_event: 0,
     }
 }
 
@@ -363,7 +364,8 @@ fn pull_request_claims_also_read_review_comments_and_reviews() {
     f.on(
         &format!("/repos/{R}/pulls/4/comments?since={S}&per_page=100"),
         &format!(
-            r#"[{{"id":60,"body":"nit","html_url":"https://gh/rc/60","pull_request_url":"https://api.github.com/repos/{R}/pulls/4","created_at":"2026-11-20T09:10:00Z","user":{{"login":"lothrop"}}}}]"#
+            r#"[{{"id":60,"body":"nit","html_url":"https://gh/rc/60","pull_request_url":"https://api.github.com/repos/{R}/pulls/4","created_at":"2026-11-20T09:10:00Z","user":{{"login":"lothrop"}}}},
+                {{"id":59,"body":"edited old","html_url":"https://gh/rc/59","pull_request_url":"https://api.github.com/repos/{R}/pulls/4","created_at":"2026-11-20T07:10:00Z","user":{{"login":"lothrop"}}}}]"#
         ),
     );
     f.on(
@@ -703,4 +705,143 @@ fn claimed_numbers_lists_only_trusted_claims_of_that_repo() {
         ("CycleFive/kharon-x#4", claim(true, S, U, &[])),
     ]);
     assert_eq!(s.claimed_numbers(R), [7, 9]);
+}
+
+fn reopened(id: u64, created: &str) -> String {
+    plain_event(id, "reopened", "lothrop", created)
+}
+
+#[test]
+fn an_item_with_both_labels_gets_two_claim_records() {
+    let f = FakeFeed::new();
+    search_items(
+        &f,
+        &[item_json(R, 4, U, &["assigned:claude", "review:claude"], true)],
+    );
+    events(
+        &f,
+        R,
+        4,
+        &[
+            labeled(510, "review:claude", "lothrop", "2026-11-20T09:10:00Z"),
+            labeled(500, "assigned:claude", "lothrop", L),
+        ],
+    );
+    admin(&f, "lothrop");
+    comments_since(&f, R, 4, L, "[]");
+    f.on(
+        &format!("/repos/{R}/pulls/4/comments?since={L}&per_page=100"),
+        "[]",
+    );
+    f.on(&format!("/repos/{R}/pulls/4/reviews?per_page=100&page=1"), "[]");
+    let p = run(&f, None);
+    assert_eq!(
+        ids(&p.records),
+        ["gh:CycleFive/kharon:claim:500", "gh:CycleFive/kharon:claim:510"]
+    );
+    assert_eq!(tags(&p.records[0]), ["routed:assigned"]);
+    assert_eq!(tags(&p.records[1]), ["routed:review"]);
+    let c = &p.state.claims["CycleFive/kharon#4"];
+    assert_eq!(c.label_events.len(), 2);
+}
+
+#[test]
+fn a_label_event_missing_from_the_events_read_stores_the_claim_and_mails_nothing() {
+    let f = FakeFeed::new();
+    search_items(&f, &[item_json(R, 7, U, &["assigned:claude"], false)]);
+    events(&f, R, 7, &[]);
+    let p = run(&f, None);
+    assert!(p.records.is_empty());
+    let c = &p.state.claims[KEY7];
+    assert!(!c.trusted && c.label_events.is_empty());
+    let before = f.calls().len();
+    let again = run(&f, Some(p.state.clone()));
+    assert_eq!(f.calls().len(), before + 1);
+    assert_eq!(again.state, p.state);
+}
+
+#[test]
+fn the_bots_own_label_is_stored_untrusted_and_not_mailed() {
+    let f = new_issue_feed("claudeduet[bot]");
+    let p = run(&f, None);
+    assert!(p.records.is_empty());
+    let c = &p.state.claims[KEY7];
+    assert!(!c.trusted);
+    assert_eq!(c.label_events["assigned:claude"], 500);
+}
+
+const REOPENED: &str = "2026-11-20T09:30:00Z";
+
+#[test]
+fn a_reopened_item_still_labelled_is_handed_over_again() {
+    let f = FakeFeed::new();
+    search_items(&f, &[item_json(R, 7, U, &["assigned:claude"], false)]);
+    events(
+        &f,
+        R,
+        7,
+        &[
+            labeled(500, "assigned:claude", "lothrop", L),
+            plain_event(800, "closed", "lothrop", "2026-11-20T09:10:00Z"),
+            reopened(900, REOPENED),
+        ],
+    );
+    admin(&f, "lothrop");
+    comments_since(&f, R, 7, REOPENED, "[]");
+    let p = run(&f, None);
+    let r = the_claim_record(&p);
+    assert_eq!(r.id, "gh:CycleFive/kharon:claim:500:900");
+    assert_eq!(r.ts, REOPENED);
+    assert_eq!(r.actor, "lothrop");
+    assert_eq!(r.title, "labeled assigned:claude");
+    assert_eq!(tags(r), ["routed:assigned"]);
+    let c = &p.state.claims[KEY7];
+    assert_eq!(c.reopened_event, 900);
+    assert_eq!(c.label_events["assigned:claude"], 500);
+    assert!(f.calls().contains(&format!(
+        "/repos/{R}/issues/7/comments?since={REOPENED}&per_page=100"
+    )));
+}
+
+#[test]
+fn the_closing_note_after_a_reopen_has_its_own_id() {
+    let f = FakeFeed::new();
+    item_reply(&f, 7, "closed", &["assigned:claude"]);
+    search_items(&f, &[]);
+    let mut c = claim(true, U, U, &[("assigned:claude", 500)]);
+    c.reopened_event = 900;
+    let p = run(&f, Some(state_of(vec![(KEY7, c)])));
+    assert_eq!(the_claim_record(&p).id, "gh:CycleFive/kharon:release:7:500:900");
+}
+
+#[test]
+fn a_reopen_before_the_label_event_changes_nothing() {
+    let f = FakeFeed::new();
+    search_items(&f, &[item_json(R, 7, U, &["assigned:claude"], false)]);
+    events(
+        &f,
+        R,
+        7,
+        &[
+            reopened(300, "2026-11-20T08:00:00Z"),
+            labeled(500, "assigned:claude", "lothrop", L),
+        ],
+    );
+    admin(&f, "lothrop");
+    comments_since(&f, R, 7, L, "[]");
+    let p = run(&f, None);
+    assert_eq!(the_claim_record(&p).id, "gh:CycleFive/kharon:claim:500");
+    assert_eq!(p.state.claims[KEY7].reopened_event, 0);
+}
+
+#[test]
+fn a_close_and_reopen_of_a_followed_claim_mails_the_event_and_updates_the_mark() {
+    let (f, prev) = followed_feed(&[
+        labeled(500, "assigned:claude", "lothrop", "2026-11-20T07:00:00Z"),
+        reopened(900, REOPENED),
+    ]);
+    comments_since(&f, R, 7, S, "[]");
+    let p = run(&f, Some(prev));
+    assert_eq!(ids(&p.records), ["gh:CycleFive/kharon:event:900"]);
+    assert_eq!(p.state.claims[KEY7].reopened_event, 900);
 }
