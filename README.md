@@ -110,8 +110,13 @@ Tags the poller adds itself:
 | `routed:assigned` | GitHub: the agent is an assignee. |
 | `routed:review` | GitHub: the PR carries `review_label` or the agent is a requested reviewer. |
 | `mine` | GitHub: a comment, review or event on an issue or PR the agent authored. |
+| `claimed` | GitHub: activity on an item handed to the agent by label (see Work handed over by label). |
+| `released` | GitHub: the closing note of such an item. Drop the claim. |
+| `untrusted-label` | GitHub: someone without write access applied the label. Not followed. |
 
 Tags starting `routed:` are addressed to the agent. `mine` is activity on its own work.
+`claimed`, `released` and `untrusted-label` do not start with `routed:`, so they do not
+call for attention by themselves: they inform. `released` tells the agent to drop a claim.
 Untagged records are context. Rules can add more tags (see Configuration).
 
 ## Tools
@@ -163,9 +168,10 @@ tick, and unknown fields are rejected.
 | Field | Default | Rule |
 | --- | --- | --- |
 | `broker` | required | Name of a service binding to a github-broker `Feed`. Same rule as above. |
-| `repos` | required | `owner/name`. Not empty, no duplicates. |
+| `repos` | required | `owner/name`. No duplicates. Not empty unless `labels` is set. |
 | `every_secs` | `300` | Minimum `60`. |
 | `review_label` | none | A label that means "review this". When set it must not be empty. |
+| `labels` | none | `{ "org": "your-org", "tag": "claude" }`. Also finds work handed over by label across the whole organisation; see Work handed over by label. `tag` is 1-32 characters of `a-z`, `0-9`, `-`. |
 | `skip_self` | `true` | As above. |
 | `keep` | `"all"` | `"all"` or `"tagged"`. |
 | `rules` | `[]` | See below. |
@@ -230,6 +236,64 @@ purges it.
     }
   }
 }
+```
+
+## Work handed over by label
+
+A person hands work to an agent by labelling an item. With `labels` set on a GitHub source
+(for example `"labels": { "org": "your-org", "tag": "claude" }`), mailroom searches the
+whole organisation, not only `repos`, for two labels:
+
+- `assigned:<tag>` on an open issue or pull request (`assigned:claude`);
+- `review:<tag>` on an open pull request (`review:claude`).
+
+`<tag>` belongs to one mailbox. The source gets one more poll target,
+`github:<broker>:labels:<org>`, on the source's `every_secs`; `mailbox_info` lists it like
+any other.
+
+**Who is trusted.** The label counts only when the person who applied it can write to the
+repository: GitHub reports their `permission` as `admin` or `write`, or their role as
+`admin`, `maintain`, `write` or `triage`. Anyone else, and anyone GitHub cannot find, is
+untrusted. A GitHub App's bot is never a trusted labeler (GitHub reports no access for
+it, and a login containing `[bot]` is untrusted without a lookup), so one agent cannot
+hand work to another. There is no allowlist. A failed permission lookup fails the poll
+and is retried; it never decides trust.
+
+**What the agent receives.**
+
+- A *claim record* when a trusted person first puts the label on an item: kind `event`,
+  title `labeled <label>`, the item's title as body, the labeler as actor, and
+  `routed:assigned` (for `assigned:<tag>`) or `routed:review` (for `review:<tag>`). This is
+  the mail that calls for attention. If the labeler is untrusted the record carries only
+  `untrusted-label`, and the item is not followed.
+- While the label stays, the item's activity (comments, review comments, reviews and
+  `assigned`, `labeled`, `review_requested`, `closed`, `merged`, `reopened` events), tagged
+  `claimed` after any other tags (`routed:mention`, `mine`). This includes repositories
+  that are not in `repos`. In a repository that is in `repos`, the per-repo poll carries
+  the activity and adds `claimed` the same way; a claim made in one tick tags activity from
+  the next tick on. Nothing older than the claim is mailed.
+- A *closing note* when the item closes, loses its label, or is gone: title
+  `released: closed`, `released: label removed` or `released: gone`, tag `released`. Drop
+  the claim. Putting the label back is a new assignment with a fresh claim record. If one
+  of the two labels is removed and the other stays, nothing is mailed.
+- Reopening: an item released by closing and then reopened with its label still on it is
+  handed over again. Its claim record is keyed to the label event and the reopen together
+  and carries the reopen's time; the closing note after it is keyed the same way.
+
+Nothing whose actor is the mailbox's own bot is mailed when `skip_self` is true. Items
+already labelled when `labels` is first turned on are mailed once, on the first poll.
+
+**Limits.** At most 20 new or changed items are read per poll (the longest-waiting first;
+the rest wait for the next poll), and at most 20 vanished claims are checked per poll. The
+search reads one page of 100; more matches produce a `gap` record. The broker's `Feed`
+must allow `/search/issues` (brokers 0.5.0 or later); against an older broker only the
+labels target fails.
+
+Example (a mailbox watching one repository and the whole organisation):
+
+```jsonc
+{ "type": "github", "broker": "GITHUB", "repos": ["your-org/your-repo"],
+  "keep": "tagged", "labels": { "org": "your-org", "tag": "claude" } }
 ```
 
 ## What is polled, and what is missed

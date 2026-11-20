@@ -60,7 +60,7 @@ fn try_poll(
     o: &GithubSource,
     prev: Option<GithubState>,
 ) -> Result<Poll<GithubState>, PollError> {
-    block_on(poll_repo(f, &me(), R, o, prev, epoch(NOW).unwrap()))
+    block_on(poll_repo(f, &me(), R, o, prev, epoch(NOW).unwrap(), &[]))
 }
 
 fn poll(f: &FakeFeed, prev: Option<GithubState>) -> Poll<GithubState> {
@@ -633,4 +633,116 @@ fn mixed_issue_list_above_both_watermarks_is_an_issues_gap() {
         .filter(|g| g.id.contains(":issues:"))
         .collect();
     assert_eq!(issue_gaps.len(), 1);
+}
+
+fn poll_claimed(f: &FakeFeed, claimed: &[u64]) -> Poll<GithubState> {
+    block_on(poll_repo(
+        f,
+        &me(),
+        R,
+        &opts(Some("review:claude"), true),
+        Some(state()),
+        epoch(NOW).unwrap(),
+        claimed,
+    ))
+    .unwrap()
+}
+
+/// An event on item `n` instead of the helper's fixed #3.
+fn event_on(n: u64, id: u64, kind: &str) -> String {
+    event(id, kind, "alice", "alice", "").replace("\"number\":3", &format!("\"number\":{n}"))
+}
+
+#[test]
+fn activity_on_a_claimed_item_is_tagged_claimed() {
+    let f = feed();
+    f.on(
+        PULLS,
+        &list(&[
+            pull(4, "alice", "2026-11-18T11:00:00Z", ""),
+            pull(5, "alice", "2026-11-18T11:00:00Z", ""),
+        ]),
+    );
+    f.on(
+        REVIEWS_P1,
+        &list(&[review(1, "alice", "APPROVED", Some("2026-11-18T11:00:00Z"))]),
+    );
+    f.on(
+        "/repos/CycleFive/kharon/pulls/5/reviews?per_page=100&page=1",
+        &list(&[review(2, "alice", "APPROVED", Some("2026-11-18T11:00:00Z"))]),
+    );
+    f.on(
+        ICOMMENTS,
+        &list(&[
+            icomment(101, "alice", "on four", 4, "2026-11-18T11:00:00Z"),
+            icomment(102, "alice", "on five", 5, "2026-11-18T11:00:00Z"),
+        ]),
+    );
+    f.on(
+        RCOMMENTS,
+        &list(&[
+            rcomment(103, "alice", "inline four", 4),
+            rcomment(104, "alice", "inline five", 5),
+        ]),
+    );
+    f.on(
+        EVENTS,
+        &list(&[event_on(4, 105, "closed"), event_on(5, 106, "closed")]),
+    );
+    let p = poll_claimed(&f, &[4]);
+    let mut seen = 0;
+    for r in p.records.iter().filter(|r| r.kind != Kind::Pr) {
+        seen += 1;
+        let claimed = r.tags.iter().any(|t| t == "claimed");
+        assert_eq!(
+            claimed,
+            r.reference == "CycleFive/kharon#4",
+            "{} {:?}",
+            r.id,
+            r.tags
+        );
+    }
+    assert_eq!(seen, 8);
+}
+
+#[test]
+fn claimed_does_not_displace_other_tags() {
+    let f = feed();
+    f.on(
+        ICOMMENTS,
+        &list(&[icomment(
+            101,
+            "alice",
+            "@claudeduet look",
+            4,
+            "2026-11-18T11:00:00Z",
+        )]),
+    );
+    let p = poll_claimed(&f, &[4]);
+    assert_eq!(tags(&p.records[0]), ["routed:mention", "claimed"]);
+}
+
+#[test]
+fn new_issues_and_pull_requests_are_not_tagged_claimed() {
+    let f = feed();
+    f.on(PULLS, &list(&[pull(4, "alice", "2026-11-18T09:00:00Z", "")]));
+    let mut st = state();
+    st.last_pr_number = 3;
+    st.last_issue_number = 3;
+    f.on(ISSUES, &list(&[issue(4, "alice", "")]));
+    let p = block_on(poll_repo(
+        &f,
+        &me(),
+        R,
+        &opts(Some("review:claude"), true),
+        Some(st),
+        epoch(NOW).unwrap(),
+        &[4],
+    ))
+    .unwrap();
+    assert!(p.records.iter().any(|r| r.kind == Kind::Issue));
+    assert!(p.records.iter().any(|r| r.kind == Kind::Pr));
+    for r in &p.records {
+        assert!(!r.tags.iter().any(|t| t == "claimed"), "{} {:?}", r.id, r.tags);
+    }
 }

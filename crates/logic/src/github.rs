@@ -339,6 +339,28 @@ fn overflowed(len: usize, ids: impl Iterator<Item = u64>, watermark: u64) -> boo
     len == PER_PAGE_N && ids.into_iter().all(|id| id > watermark)
 }
 
+/// Tags activity (comments, reviews, events) on claimed items `claimed`, after its other tags.
+fn tag_claimed(records: &mut [NewRecord], claimed: &[u64]) {
+    if claimed.is_empty() {
+        return;
+    }
+    for r in records.iter_mut() {
+        if !matches!(
+            r.kind,
+            Kind::IssueComment | Kind::ReviewComment | Kind::Review | Kind::Event
+        ) {
+            continue;
+        }
+        let number = r
+            .reference
+            .rsplit_once('#')
+            .and_then(|(_, n)| n.parse::<u64>().ok());
+        if number.is_some_and(|n| claimed.contains(&n)) && !r.tags.iter().any(|t| t == "claimed") {
+            r.tags.push("claimed".to_string());
+        }
+    }
+}
+
 pub async fn poll_repo(
     feed: &impl FeedClient,
     me: &Identity,
@@ -346,6 +368,7 @@ pub async fn poll_repo(
     opts: &GithubSource,
     prev: Option<GithubState>,
     now_epoch: i64,
+    claimed: &[u64],
 ) -> Result<Poll<GithubState>, PollError> {
     let base = format!("/repos/{repo}");
     let issues: Vec<Item> = get_json(
@@ -580,6 +603,7 @@ pub async fn poll_repo(
 
     // Stable: ties keep the table's order.
     records.sort_by_key(|r| epoch(&r.ts));
+    tag_claimed(&mut records, claimed);
 
     Ok(Poll {
         records,

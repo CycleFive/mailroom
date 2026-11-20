@@ -14,7 +14,7 @@ import {
 import { publicUrl, type Env } from "./env";
 
 export const SCOPE = "mailroom";
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 
 export const DISCORD_AUTHORIZE = "https://discord.com/oauth2/authorize";
 
