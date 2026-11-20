@@ -132,12 +132,19 @@ failure of the lookup fails the poll, which is retried; it never decides trust.
 | --- | --- | --- | --- | --- |
 | claim, trusted | `event` | `gh:<repo>:claim:<event id>` | `labeled <label>` | `routed:assigned` for `assigned:<tag>`, `routed:review` for `review:<tag>` |
 | claim, untrusted | `event` | same | same | `untrusted-label` |
+| claim, after a reopen | `event` | `gh:<repo>:claim:<event id>:<reopened event id>` | same | as the label's claim record |
 | activity on a trusted claim | as the per-repo poll | as the per-repo poll | as the per-repo poll | `claimed`, plus `routed:mention` and `mine` as today |
 | closing note | `event` | `gh:<repo>:release:<n>:<latest claim event id>` | `released: closed`, `released: label removed` or `released: gone` | `released` |
 
 The claim record and the closing note carry the item's title as body and its URL, the
 labeler as actor (none on the note), and `<repo>#<n>` as reference. `skip_self` applies to
 all of them as it does today: nothing whose actor is the mailbox's own bot is mailed.
+
+An item that was released by closing and is then reopened with its label still on it is
+handed over again: its claim record is keyed to the label event and the later `reopened`
+event together and carries the reopen's time, and the closing note after it is keyed the
+same way (`gh:<repo>:release:<n>:<event id>:<reopened event id>`), so neither is mistaken
+for the earlier one by the inbox. Trust is still that of the labeler.
 
 `claimed`, `released` and `untrusted-label` do not start `routed:`, so they inform without
 calling for attention; `released` tells the agent to drop its claim.
