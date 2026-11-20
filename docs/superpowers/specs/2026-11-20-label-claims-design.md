@@ -30,7 +30,6 @@ over to match, so the behaviour here is the shared one.
 - Watching every repository of the organisation for all activity.
 - Webhooks, or anything that pushes to an agent. Mailroom still never wakes anyone.
 - Trusting comment text. The trust check is about who applied the label, nothing else.
-- An allowlist of trusted bots. See Constraints.
 - Replacing `review_label`, assignee or requested-reviewer routing.
 
 ## Anti-goals
@@ -56,8 +55,8 @@ over to match, so the behaviour here is the shared one.
 - `GET /repos/{repo}/collaborators/{login}/permission` reports a person's access:
   `permission` is `admin`, `write`, `read` or `none`, and `role_name` adds `maintain` and
   `triage`. For a GitHub App's bot user it reports `none` (checked with
-  `cycle-five-muse[bot]`). So a label applied by another agent is untrusted. That is kept
-  on purpose: it stops one misled agent handing work to another.
+  `cycle-five-muse[bot]`). So a label applied by another agent is untrusted
+  unless the mailbox lists that agent's bot in `trusted_labelers` (see Trust).
 - The GitHub broker's `Feed` reads `/repos/` paths only. It must also allow
   `/search/issues` (brokers 0.5.0, deployed before this).
 - The inbox stores a record once per `id` (`INSERT OR IGNORE`): the first writer wins, and
@@ -104,8 +103,13 @@ case, as GitHub does. A counted item the mailbox is tracking is a *claim*.
 
 The labeler of a `labeled` event is trusted when GitHub reports `permission` `admin` or
 `write`, or `role_name` `admin`, `maintain`, `write` or `triage`, for them on that
-repository. Anything else is untrusted: a missing user (404), and any login that is not
-plain letters, digits and hyphens, which covers every app and bot, without a lookup. Any
+repository, or when their login is in the source's `labels.trusted_labelers` (added
+2026-11-20 at Lothrop's request, after an agent's review request by label turned up as
+untrusted: GitHub reports no role for an app, so this list is the only way an agent can
+hand work to another). A listed login is trusted for both labels without a lookup; entries
+are whole logins, `name` or `name[bot]`, matched in any case. Anything else is untrusted:
+a missing user (404), and any unlisted login that is not plain letters, digits and
+hyphens, which covers every other app and bot, without a lookup. Any
 other failure of the lookup fails the poll, which is retried; it never decides trust.
 
 Trust is kept per label and follows that label's newest `labeled` event. A claim is
@@ -194,7 +198,7 @@ broker; a new mailroom against an old broker would only fail the labels target.
 
 - `assigned:<tag>` counts on issues and pull requests; `review:<tag>` only on pull requests.
 - Items already labelled at rollout get their mail on the first poll.
-- Bots are never trusted labelers; no allowlist.
+- A bot is a trusted labeler only when the source lists it; the list covers both labels, not `review:` alone.
 - The claim record has its own id (`claim:`), not the per-repo poll's `event:` id, so in a
   watched repository the plain `labeled` event may also appear as context. A shared id
   would let whichever poll ran first decide whether the record carries the `routed:` tag.

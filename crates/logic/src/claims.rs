@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
-use crate::config::GithubSource;
+use crate::config::{GithubSource, LabelRouting};
 use crate::feed::{get_json, FeedClient, FeedError, Identity, Poll, PollError};
 use crate::github::{
     event_record, gap_record, issue_comment_record, review_comment_record, review_record, Comment, Ctx,
@@ -130,8 +130,17 @@ fn bad_status(e: &FeedError, codes: &[u16]) -> bool {
     matches!(e, FeedError::Status { status, .. } if codes.contains(status))
 }
 
-/// Whether `login` may hand work out in `repo`. Bots and missing users are not trusted.
-async fn trusted_labeler(feed: &impl FeedClient, repo: &str, login: &str) -> Result<bool, PollError> {
+/// Whether `login` may hand work out in `repo`: it is on the source's own list, or GitHub
+/// reports triage access or more. A bot that is not listed and a missing user are not trusted.
+async fn trusted_labeler(
+    feed: &impl FeedClient,
+    routing: &LabelRouting,
+    repo: &str,
+    login: &str,
+) -> Result<bool, PollError> {
+    if routing.trusts(login) {
+        return Ok(true);
+    }
     if login.is_empty() || !login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Ok(false);
     }
@@ -453,7 +462,7 @@ pub async fn poll_claims(
             let ok = match trust.get(&slot) {
                 Some(ok) => *ok,
                 None => {
-                    let ok = trusted_labeler(feed, repo, actor).await?;
+                    let ok = trusted_labeler(feed, routing, repo, actor).await?;
                     trust.insert(slot, ok);
                     ok
                 }

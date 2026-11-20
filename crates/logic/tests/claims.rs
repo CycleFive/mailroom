@@ -265,6 +265,70 @@ fn a_bot_labeler_is_untrusted_without_a_lookup() {
     );
 }
 
+/// `opts` with the given logins allowed to hand work out whatever GitHub says of them.
+fn opts_trusting(logins: &[&str], skip_self: bool) -> GithubSource {
+    let list = logins
+        .iter()
+        .map(|l| format!("\"{l}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let json = format!(
+        r#"{{"broker":"B","repos":[],"skip_self":{skip_self},"labels":{{"org":"CycleFive","tag":"claude","trusted_labelers":[{list}]}}}}"#
+    );
+    serde_json::from_str(&json).unwrap()
+}
+
+#[test]
+fn an_allowlisted_bot_is_trusted_without_a_lookup() {
+    let f = new_issue_feed("cycle-five-muse[bot]");
+    let o = opts_trusting(&["Cycle-Five-Muse[bot]"], true);
+    let p = run_with(&f, &o, None).unwrap();
+    let r = the_claim_record(&p);
+    assert_eq!(r.actor, "cycle-five-muse[bot]");
+    assert_eq!(tags(r), ["routed:assigned"]);
+    assert!(p.state.claims[KEY7].trusted);
+    assert!(
+        !f.calls().iter().any(|c| c.contains("/collaborators/")),
+        "{:?}",
+        f.calls()
+    );
+    // Trusted means followed: the activity since the label was read.
+    assert!(
+        f.calls().iter().any(|c| c.contains("/issues/7/comments")),
+        "{:?}",
+        f.calls()
+    );
+}
+
+#[test]
+fn a_bot_that_is_not_on_the_list_stays_untrusted() {
+    let f = new_issue_feed("some-other-app[bot]");
+    let o = opts_trusting(&["cycle-five-muse[bot]"], true);
+    let p = run_with(&f, &o, None).unwrap();
+    assert_eq!(tags(the_claim_record(&p)), ["untrusted-label"]);
+    assert!(!p.state.claims[KEY7].trusted);
+}
+
+#[test]
+fn a_login_that_only_starts_like_an_allowlisted_one_stays_untrusted() {
+    // "cycle-five-muse" (a person's login) is not "cycle-five-muse[bot]": it is looked up like anyone.
+    let f = new_issue_feed("cycle-five-muse");
+    perm(&f, "cycle-five-muse", "read", "read");
+    let o = opts_trusting(&["cycle-five-muse[bot]"], true);
+    let p = run_with(&f, &o, None).unwrap();
+    assert_eq!(tags(the_claim_record(&p)), ["untrusted-label"]);
+}
+
+#[test]
+fn the_mailboxs_own_allowlisted_bot_claims_without_mail() {
+    // The agent labelled the item itself: nothing to tell it, but the item is followed.
+    let f = new_issue_feed("claudeduet[bot]");
+    let o = opts_trusting(&["claudeduet[bot]"], true);
+    let p = run_with(&f, &o, None).unwrap();
+    assert!(p.records.is_empty(), "{:?}", ids(&p.records));
+    assert!(p.state.claims[KEY7].trusted);
+}
+
 #[test]
 fn a_missing_labeler_is_untrusted() {
     let f = new_issue_feed("ghost");

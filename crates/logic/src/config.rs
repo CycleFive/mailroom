@@ -79,6 +79,10 @@ pub struct LabelRouting {
     pub org: String,
     /// The tag in `assigned:<tag>` and `review:<tag>`.
     pub tag: String,
+    /// Logins whose labels count whatever access GitHub reports for them: the way to let
+    /// an app's bot (`name[bot]`), which GitHub gives no role, hand work to this mailbox.
+    #[serde(default)]
+    pub trusted_labelers: Vec<String>,
 }
 
 impl LabelRouting {
@@ -88,6 +92,13 @@ impl LabelRouting {
 
     pub fn review(&self) -> String {
         format!("review:{}", self.tag)
+    }
+
+    /// Whether `login` is on the list, whole and in any case.
+    pub fn trusts(&self, login: &str) -> bool {
+        self.trusted_labelers
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(login))
     }
 }
 
@@ -289,6 +300,22 @@ fn validate_source(agent: &str, index: usize, source: &SourceConfig) -> Result<(
                         "labels.tag",
                         format!("{:?} must be 1-32 chars of a-z, 0-9, '-'", l.tag),
                     );
+                }
+                let mut listed = BTreeSet::new();
+                for login in &l.trusted_labelers {
+                    // A GitHub login, optionally an app's bot user: "name" or "name[bot]".
+                    let name = login.strip_suffix("[bot]").unwrap_or(login);
+                    let login_ok = (1..=39).contains(&name.len())
+                        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+                    if !login_ok {
+                        return fail(
+                            "labels.trusted_labelers",
+                            format!("{login:?} must be a GitHub login, optionally ending in [bot]"),
+                        );
+                    }
+                    if !listed.insert(login.to_ascii_lowercase()) {
+                        return fail("labels.trusted_labelers", format!("duplicate {login:?}"));
+                    }
                 }
             }
             for r in &g.repos {
