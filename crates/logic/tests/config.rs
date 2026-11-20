@@ -269,3 +269,85 @@ fn a_source_without_labels_is_unchanged() {
     assert_eq!(github_source(&c).labels_key(), None);
     assert_eq!(c.agents["claude"].sources[0].target_keys(), vec!["github:G:o/a"]);
 }
+
+#[test]
+fn a_review_label_that_is_one_of_the_label_names_is_rejected() {
+    for review_label in [
+        "review:claude",
+        "assigned:claude",
+        "Review:Claude",
+        "ASSIGNED:CLAUDE",
+    ] {
+        let e = err(&github(&format!(
+            r#""repos":["o/a"],"labels":{{"org":"o","tag":"claude"}},"review_label":"{review_label}""#
+        )));
+        assert!(
+            e.contains("review_label: must not be one of the labels.tag names; labels already route it, with a trust check"),
+            "{e}"
+        );
+    }
+    // An unrelated name, or no labels block, is fine.
+    assert!(Config::parse(&github(
+        r#""repos":["o/a"],"labels":{"org":"o","tag":"claude"},"review_label":"needs-review""#
+    ))
+    .is_ok());
+    assert!(Config::parse(&github(r#""repos":["o/a"],"review_label":"review:claude""#)).is_ok());
+}
+
+fn two_sources(a: &str, b: &str) -> String {
+    with_source(&format!(
+        r#"{{"type":"github","broker":"G",{a}}},{{"type":"github","broker":"G",{b}}}"#
+    ))
+}
+
+#[test]
+fn a_target_key_may_come_from_only_one_source() {
+    let e = err(&two_sources(r#""repos":["o/a"]"#, r#""repos":["o/b","o/a"]"#));
+    assert!(e.contains("duplicate target github:G:o/a"), "{e}");
+    let e = err(&two_sources(
+        r#""labels":{"org":"o","tag":"claude"}"#,
+        r#""labels":{"org":"o","tag":"other"}"#,
+    ));
+    assert!(e.contains("duplicate target github:G:labels:o"), "{e}");
+    // The same repository under another broker, or another organisation, is another target.
+    assert!(Config::parse(&with_source(
+        r#"{"type":"github","broker":"G","repos":["o/a"]},{"type":"github","broker":"H","repos":["o/a"]}"#
+    ))
+    .is_ok());
+    assert!(Config::parse(&two_sources(
+        r#""labels":{"org":"o","tag":"claude"}"#,
+        r#""labels":{"org":"p","tag":"claude"}"#
+    ))
+    .is_ok());
+}
+
+#[test]
+fn target_finds_what_a_key_names() {
+    let c = Config::parse(&github(
+        r#""repos":["o/a","o/b"],"labels":{"org":"CycleFive","tag":"claude"}"#,
+    ))
+    .unwrap();
+    let g = github_source(&c);
+    assert_eq!(g.target("github:G:o/b"), Some(GithubTarget::Repo("o/b")));
+    let Some(GithubTarget::Labels(l)) = g.target("github:G:labels:CycleFive") else {
+        panic!()
+    };
+    assert_eq!(l.tag, "claude");
+    assert_eq!(g.target("github:G:o/c"), None);
+    assert_eq!(g.target("github:H:o/a"), None);
+    assert_eq!(g.target("discord:G:o/a"), None);
+}
+
+#[test]
+fn target_works_for_a_source_without_repos() {
+    let c = Config::parse(&github(
+        r#""repos":[],"labels":{"org":"CycleFive","tag":"claude"}"#,
+    ))
+    .unwrap();
+    let g = github_source(&c);
+    assert!(matches!(
+        g.target("github:G:labels:CycleFive"),
+        Some(GithubTarget::Labels(_))
+    ));
+    assert_eq!(g.target("github:G:o/a"), None);
+}

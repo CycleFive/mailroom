@@ -91,7 +91,29 @@ impl LabelRouting {
     }
 }
 
+/// What a GitHub target key of a source names.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GithubTarget<'a> {
+    /// "owner/name", polled by `poll_repo`.
+    Repo(&'a str),
+    /// The labels block, polled by `poll_claims`.
+    Labels(&'a LabelRouting),
+}
+
 impl GithubSource {
+    /// What `key` names in this source, or `None` when it is none of its targets.
+    pub fn target(&self, key: &str) -> Option<GithubTarget<'_>> {
+        if let Some(l) = &self.labels {
+            if Some(key) == self.labels_key().as_deref() {
+                return Some(GithubTarget::Labels(l));
+            }
+        }
+        self.repos
+            .iter()
+            .find(|r| key == format!("github:{}:{r}", self.broker))
+            .map(|r| GithubTarget::Repo(r.as_str()))
+    }
+
     /// "github:<broker>:labels:<org>" when `labels` is set.
     pub fn labels_key(&self) -> Option<String> {
         self.labels
@@ -188,8 +210,16 @@ impl Config {
                     agent.signin
                 )));
             }
+            let mut keys = BTreeSet::new();
             for (i, source) in agent.sources.iter().enumerate() {
                 validate_source(name, i, source)?;
+                for key in source.target_keys() {
+                    if !keys.insert(key.clone()) {
+                        return Err(ConfigError(format!(
+                            "agent {name:?} source {i}: duplicate target {key}"
+                        )));
+                    }
+                }
             }
         }
         Ok(())
@@ -272,6 +302,16 @@ fn validate_source(agent: &str, index: usize, source: &SourceConfig) -> Result<(
             }
             if g.review_label.as_deref() == Some("") {
                 return fail("review_label", "must not be empty".into());
+            }
+            // The per-repo poll tags `review_label` without asking who applied it.
+            if let (Some(rl), Some(l)) = (&g.review_label, &g.labels) {
+                if rl.eq_ignore_ascii_case(&l.assigned()) || rl.eq_ignore_ascii_case(&l.review()) {
+                    return fail(
+                        "review_label",
+                        "must not be one of the labels.tag names; labels already route it, with a trust check"
+                            .into(),
+                    );
+                }
             }
         }
     }

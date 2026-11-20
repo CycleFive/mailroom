@@ -3,7 +3,7 @@
 use std::cell::Cell;
 
 use mailroom_logic::claims::{self, ClaimsState};
-use mailroom_logic::config::{AgentConfig, Config, SourceConfig};
+use mailroom_logic::config::{AgentConfig, Config, GithubTarget, SourceConfig};
 use mailroom_logic::feed::{FeedClient, Identity, Poll};
 use mailroom_logic::mcp::{
     self, checked_limit, AckArgs, AckResult, Mailbox as MailboxTools, MailboxInfo, McpReply, McpRequest,
@@ -404,26 +404,39 @@ impl Mailbox {
                 commit(sql, key, source, poll, now).map_err(prev)
             }
             SourceConfig::Github(g) => {
-                // Dispatch on the key before indexing: the labels key sits after the repos.
-                if Some(key) == g.labels_key().as_deref() {
-                    let previous = store::get_json(sql, &state_key(key)).map_err(prev)?;
-                    let poll = claims::poll_claims(feed, me, g, previous, now)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    return commit(sql, key, source, poll, now).map_err(prev);
+                let previous_key = state_key(key);
+                match g.target(key) {
+                    Some(GithubTarget::Labels(_)) => {
+                        let previous = store::get_json(sql, &previous_key).map_err(prev)?;
+                        let poll = claims::poll_claims(feed, me, g, previous, now)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        commit(sql, key, source, poll, now).map_err(prev)
+                    }
+                    Some(GithubTarget::Repo(repo)) => {
+                        let previous = store::get_json(sql, &previous_key).map_err(prev)?;
+                        let claimed = match g.labels_key() {
+                            None => Vec::new(),
+                            Some(labels_key) => {
+                                // Absent claims mean none: the labels target may not have run yet.
+                                match store::get_json::<ClaimsState>(sql, &state_key(&labels_key)) {
+                                    Ok(state) => state.map(|c| c.claimed_numbers(repo)).unwrap_or_default(),
+                                    Err(e) => {
+                                        console_error!(
+                                            "poll {key}: the stored claims of {labels_key} cannot be decoded, polling with none: {e}"
+                                        );
+                                        Vec::new()
+                                    }
+                                }
+                            }
+                        };
+                        let poll = github::poll_repo(feed, me, repo, g, previous, now, &claimed)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        commit(sql, key, source, poll, now).map_err(prev)
+                    }
+                    None => Err(format!("the target {key} is not one of the source's targets")),
                 }
-                let previous = store::get_json(sql, &state_key(key)).map_err(prev)?;
-                let repo = &g.repos[index];
-                // Absent or undecodable claims mean none: the labels target may not have run yet.
-                let claimed = g
-                    .labels_key()
-                    .and_then(|k| store::get_json::<ClaimsState>(sql, &state_key(&k)).ok().flatten())
-                    .map(|c| c.claimed_numbers(repo))
-                    .unwrap_or_default();
-                let poll = github::poll_repo(feed, me, repo, g, previous, now, &claimed)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                commit(sql, key, source, poll, now).map_err(prev)
             }
         }
     }
