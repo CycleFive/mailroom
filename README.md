@@ -290,8 +290,9 @@ more activity.
   repeats.
 - A *closing note* when the item closes, loses its label, or is gone: title
   `released: closed`, `released: label removed` or `released: gone`, tag `released`. Drop
-  the claim. Putting the label back is a new assignment with a fresh claim record. If one
-  of the two labels is removed and the other stays, nothing is mailed.
+  the claim. Putting the label back is a new assignment with a fresh claim record. While a
+  trusted label still stands, removing the other label mails nothing; when the trusted one
+  is removed and only an untrusted one remains, the closing note is written.
 - Reopening: an item released by closing and then reopened with its label still on it is
   handed over again. Its claim record is keyed to the label event and the reopen together
   and carries the reopen's time; the closing note after it is keyed the same way.
