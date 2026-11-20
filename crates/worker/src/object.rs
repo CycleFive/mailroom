@@ -2,6 +2,7 @@
 
 use std::cell::Cell;
 
+use mailroom_logic::claims::{self, ClaimsState};
 use mailroom_logic::config::{AgentConfig, Config, SourceConfig};
 use mailroom_logic::feed::{FeedClient, Identity, Poll};
 use mailroom_logic::mcp::{
@@ -403,8 +404,23 @@ impl Mailbox {
                 commit(sql, key, source, poll, now).map_err(prev)
             }
             SourceConfig::Github(g) => {
+                // Dispatch on the key before indexing: the labels key sits after the repos.
+                if Some(key) == g.labels_key().as_deref() {
+                    let previous = store::get_json(sql, &state_key(key)).map_err(prev)?;
+                    let poll = claims::poll_claims(feed, me, g, previous, now)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    return commit(sql, key, source, poll, now).map_err(prev);
+                }
                 let previous = store::get_json(sql, &state_key(key)).map_err(prev)?;
-                let poll = github::poll_repo(feed, me, &g.repos[index], g, previous, now)
+                let repo = &g.repos[index];
+                // Absent or undecodable claims mean none: the labels target may not have run yet.
+                let claimed = g
+                    .labels_key()
+                    .and_then(|k| store::get_json::<ClaimsState>(sql, &state_key(&k)).ok().flatten())
+                    .map(|c| c.claimed_numbers(repo))
+                    .unwrap_or_default();
+                let poll = github::poll_repo(feed, me, repo, g, previous, now, &claimed)
                     .await
                     .map_err(|e| e.to_string())?;
                 commit(sql, key, source, poll, now).map_err(prev)

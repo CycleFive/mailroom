@@ -184,7 +184,7 @@ describe("address per agent", () => {
   });
 
   it("serves a banner", async () => {
-    expect(await (await call(env(), "/")).text()).toBe(`mailroom 0.2.0: the MCP address of a mailbox is ${BASE}/<agent>/mcp\n`);
+    expect(await (await call(env(), "/")).text()).toBe(`mailroom 0.3.0: the MCP address of a mailbox is ${BASE}/<agent>/mcp\n`);
   });
 
   it("keeps the authorization server metadata", async () => {
