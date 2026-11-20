@@ -15,11 +15,21 @@ enum Reply {
 pub struct FakeFeed {
     replies: RefCell<BTreeMap<String, Reply>>,
     calls: RefCell<Vec<String>>,
+    strict: bool,
 }
 
 impl FakeFeed {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A feed that answers an unregistered path with status 599 instead of 404, so a missing
+    /// or misspelt fixture cannot pass as "not found".
+    pub fn strict() -> Self {
+        FakeFeed {
+            strict: true,
+            ..Self::default()
+        }
     }
 
     /// Registers a body for `path?k=v&k=v` (or just `path`).
@@ -55,7 +65,7 @@ impl FeedClient for FakeFeed {
                 message: format!("fake failure for {key}"),
             }),
             None => Err(FeedError::Status {
-                status: 404,
+                status: if self.strict { 599 } else { 404 },
                 message: format!("no fake registered for {key}"),
             }),
         }
