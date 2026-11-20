@@ -42,6 +42,9 @@ pub struct Claim {
     pub label_events: BTreeMap<String, u64>,
     /// True once any of its label events came from a trusted labeler.
     pub trusted: bool,
+    /// Id of the latest `reopened` event after the claim's latest label event; 0 when none.
+    #[serde(default)]
+    pub reopened_event: u64,
 }
 
 impl ClaimsState {
@@ -260,6 +263,7 @@ pub async fn poll_claims(
             since: String::new(),
             label_events: BTreeMap::new(),
             trusted: false,
+            reopened_event: 0,
         });
         claim.title = item.title.clone();
         claim.url = item.html_url.clone();
@@ -301,11 +305,20 @@ pub async fn poll_claims(
             };
             claim.trusted |= ok;
             claim.label_events.insert((*name).to_string(), e.id);
-            handled.push(&e.created_at);
+            // An item reopened after the label went on is handed over again, under its own id.
+            let reopen = evs
+                .iter()
+                .filter(|r| r.event == "reopened" && r.id > e.id)
+                .max_by_key(|r| r.id);
+            let (id, ts) = match reopen {
+                Some(r) => (format!("claim:{}:{}", e.id, r.id), r.created_at.as_str()),
+                None => (format!("claim:{}", e.id), e.created_at.as_str()),
+            };
+            handled.push(ts);
             if ctx.skips(actor) {
                 continue;
             }
-            let mut r = ctx.record(Kind::Event, format!("claim:{}", e.id), &e.created_at, actor, n);
+            let mut r = ctx.record(Kind::Event, id, ts, actor, n);
             r.title = format!("labeled {name}");
             r.body = item.title.clone();
             r.url = item.html_url.clone();
@@ -317,8 +330,15 @@ pub async fn poll_claims(
             r.tags
                 .push(if ok { routed } else { "untrusted-label" }.to_string());
             records.push(r);
-            mailed.push(&e.created_at);
+            mailed.push(ts);
         }
+        let latest_label = claim.label_events.values().copied().max().unwrap_or(0);
+        claim.reopened_event = evs
+            .iter()
+            .filter(|r| r.event == "reopened" && r.id > latest_label)
+            .map(|r| r.id)
+            .max()
+            .unwrap_or(0);
 
         // What happened on a trusted claim, unless the per-repo poll carries it.
         let watched = opts.repos.iter().any(|r| r.eq_ignore_ascii_case(repo));
@@ -427,7 +447,10 @@ pub async fn poll_claims(
                 records.push(NewRecord {
                     src: Src::Github,
                     kind: Kind::Event,
-                    id: format!("gh:{repo}:release:{number}:{latest}"),
+                    id: match claim.reopened_event {
+                        0 => format!("gh:{repo}:release:{number}:{latest}"),
+                        r => format!("gh:{repo}:release:{number}:{latest}:{r}"),
+                    },
                     ts: iso(now_epoch),
                     actor: String::new(),
                     reference: key.clone(),
