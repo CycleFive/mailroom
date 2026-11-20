@@ -191,3 +191,81 @@ fn rejects_bad_signin() {
         assert!(e.contains("claude") && e.contains("signin"), "{e}");
     }
 }
+
+fn github(extra: &str) -> String {
+    with_source(&format!(r#"{{"type":"github","broker":"G",{extra}}}"#))
+}
+
+fn github_source(c: &Config) -> &GithubSource {
+    let SourceConfig::Github(g) = &c.agents["claude"].sources[0] else {
+        panic!()
+    };
+    g
+}
+
+#[test]
+fn labels_block_parses_and_names_its_labels() {
+    let c = Config::parse(&github(
+        r#""repos":["o/a"],"labels":{"org":"CycleFive","tag":"claude"}"#,
+    ))
+    .unwrap();
+    let l = github_source(&c).labels.as_ref().unwrap();
+    assert_eq!(l.assigned(), "assigned:claude");
+    assert_eq!(l.review(), "review:claude");
+}
+
+#[test]
+fn labels_adds_one_target_after_the_repos() {
+    let c = Config::parse(&github(
+        r#""repos":["o/a","o/b"],"labels":{"org":"CycleFive","tag":"claude"}"#,
+    ))
+    .unwrap();
+    assert_eq!(
+        c.agents["claude"].sources[0].target_keys(),
+        vec!["github:G:o/a", "github:G:o/b", "github:G:labels:CycleFive"]
+    );
+    assert_eq!(
+        github_source(&c).labels_key().as_deref(),
+        Some("github:G:labels:CycleFive")
+    );
+}
+
+#[test]
+fn a_source_with_labels_may_have_no_repos() {
+    let c = Config::parse(&github(r#""labels":{"org":"CycleFive","tag":"claude"}"#)).unwrap();
+    assert_eq!(
+        c.agents["claude"].sources[0].target_keys(),
+        vec!["github:G:labels:CycleFive"]
+    );
+}
+
+#[test]
+fn a_github_source_needs_repos_or_labels() {
+    assert!(err(&github(r#""repos":[]"#)).contains("repos: must not be empty unless labels is set"));
+    assert!(err(&with_source(r#"{"type":"github","broker":"G"}"#))
+        .contains("repos: must not be empty unless labels is set"));
+}
+
+#[test]
+fn labels_org_and_tag_are_checked() {
+    for org in ["", "has space"] {
+        let e = err(&github(&format!(r#""labels":{{"org":"{org}","tag":"claude"}}"#)));
+        assert!(e.contains("labels.org"), "{e}");
+    }
+    for tag in ["Upper", ""] {
+        let e = err(&github(&format!(r#""labels":{{"org":"o","tag":"{tag}"}}"#)));
+        assert!(e.contains("labels.tag"), "{e}");
+    }
+}
+
+#[test]
+fn labels_rejects_unknown_keys() {
+    assert!(Config::parse(&github(r#""labels":{"org":"o","tag":"t","extra":1}"#)).is_err());
+}
+
+#[test]
+fn a_source_without_labels_is_unchanged() {
+    let c = Config::parse(&github(r#""repos":["o/a"]"#)).unwrap();
+    assert_eq!(github_source(&c).labels_key(), None);
+    assert_eq!(c.agents["claude"].sources[0].target_keys(), vec!["github:G:o/a"]);
+}
