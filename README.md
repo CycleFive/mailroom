@@ -107,12 +107,12 @@ Tags the poller adds itself:
 | --- | --- |
 | `routed:mention` | Discord: the message mentions the agent's bot. GitHub: the text contains `@<app slug>`. |
 | `routed:reply` | Discord: the message replies to one of the bot's messages. |
-| `routed:assigned` | GitHub: the agent is an assignee. |
-| `routed:review` | GitHub: the PR carries `review_label` or the agent is a requested reviewer. |
+| `routed:assigned` | GitHub: the agent is an assignee, or a trusted person put `assigned:<tag>` on the item (see Work handed over by label). |
+| `routed:review` | GitHub: the PR carries `review_label` or the agent is a requested reviewer, or a trusted person put `review:<tag>` on the PR (see Work handed over by label). |
 | `mine` | GitHub: a comment, review or event on an issue or PR the agent authored. |
 | `claimed` | GitHub: activity on an item handed to the agent by label (see Work handed over by label). |
 | `released` | GitHub: the closing note of such an item. Drop the claim. |
-| `untrusted-label` | GitHub: someone without write access applied the label. Not followed. |
+| `untrusted-label` | GitHub: the label was applied by someone GitHub does not report as having triage, write, maintain or admin access to that repository, or by any app or bot. Not followed. |
 
 Tags starting `routed:` are addressed to the agent. `mine` is activity on its own work.
 `claimed`, `released` and `untrusted-label` do not start with `routed:`, so they do not
@@ -170,7 +170,7 @@ tick, and unknown fields are rejected.
 | `broker` | required | Name of a service binding to a github-broker `Feed`. Same rule as above. |
 | `repos` | required | `owner/name`. No duplicates. Not empty unless `labels` is set. |
 | `every_secs` | `300` | Minimum `60`. |
-| `review_label` | none | A label that means "review this". When set it must not be empty. |
+| `review_label` | none | A label that means "review this". When set it must not be empty, and with `labels` it must not be `assigned:<tag>` or `review:<tag>` (in any case): those labels already route, with a trust check. |
 | `labels` | none | `{ "org": "your-org", "tag": "claude" }`. Also finds work handed over by label across the whole organisation; see Work handed over by label. `tag` is 1-32 characters of `a-z`, `0-9`, `-`. |
 | `skip_self` | `true` | As above. |
 | `keep` | `"all"` | `"all"` or `"tagged"`. |
@@ -223,7 +223,7 @@ purges it.
             { "when": { "body_contains": ["deploy"] }, "then": { "tag": "deploy" } }
           ] },
         { "type": "github", "broker": "GITHUB", "every_secs": 300,
-          "repos": ["your-org/your-repo"], "review_label": "review:claude",
+          "repos": ["your-org/your-repo"], "review_label": "needs-review",
           "skip_self": true, "keep": "tagged", "rules": [] }
       ]
     },
@@ -249,7 +249,12 @@ whole organisation, not only `repos`, for two labels:
 
 `<tag>` belongs to one mailbox. The source gets one more poll target,
 `github:<broker>:labels:<org>`, on the source's `every_secs`; `mailbox_info` lists it like
-any other.
+any other. Put `labels` on the same source that lists the organisation's repositories in
+`repos`: only that source's repo polls learn which items are claimed, and so only they
+tag the claimed activity.
+
+Label names match in any case (`Assigned:Claude` is `assigned:claude`); the claim record
+shows the name as GitHub has it.
 
 **Who is trusted.** The label counts only when the person who applied it can write to the
 repository: GitHub reports their `permission` as `admin` or `write`, or their role as
@@ -258,6 +263,15 @@ untrusted. A GitHub App's bot is never a trusted labeler (GitHub reports no acce
 it, and a login containing `[bot]` is untrusted without a lookup), so one agent cannot
 hand work to another. There is no allowlist. A failed permission lookup fails the poll
 and is retried; it never decides trust.
+
+Trust is decided per label, by the item's events and never by the search alone. For each
+label that the search shows, the newest `labeled` event decides, and it counts only if no
+later `unlabeled` event removed it, even when the search still lists the item. An item is
+trusted while at least one label that counts was applied by a trusted person. If a
+trusted claim stops being trusted (its trusted label was removed while an untrusted one
+stays, or it was removed and put back by an untrusted person), the agent gets a closing
+note, `released: label removed`, and the claim is kept as untrusted: not followed, no
+more activity.
 
 **What the agent receives.**
 
@@ -269,9 +283,11 @@ and is retried; it never decides trust.
 - While the label stays, the item's activity (comments, review comments, reviews and
   `assigned`, `labeled`, `review_requested`, `closed`, `merged`, `reopened` events), tagged
   `claimed` after any other tags (`routed:mention`, `mine`). This includes repositories
-  that are not in `repos`. In a repository that is in `repos`, the per-repo poll carries
-  the activity and adds `claimed` the same way; a claim made in one tick tags activity from
-  the next tick on. Nothing older than the claim is mailed.
+  that are not in `repos`. In a repository that is in `repos`, the poll that makes the
+  claim (or makes it trusted) mails what happened since the trusted label, once; from then
+  on the per-repo poll carries the activity and adds `claimed` the same way. Nothing
+  older than the trusted label is mailed; activity at or after it is, and the inbox drops
+  repeats.
 - A *closing note* when the item closes, loses its label, or is gone: title
   `released: closed`, `released: label removed` or `released: gone`, tag `released`. Drop
   the claim. Putting the label back is a new assignment with a fresh claim record. If one
@@ -284,7 +300,13 @@ Nothing whose actor is the mailbox's own bot is mailed when `skip_self` is true.
 already labelled when `labels` is first turned on are mailed once, on the first poll.
 
 **Limits.** At most 20 new or changed items are read per poll (the longest-waiting first;
-the rest wait for the next poll), and at most 20 vanished claims are checked per poll. The
+the rest wait for the next poll), and at most 20 vanished claims are checked per poll.
+Once a poll has made 60 requests after the search it starts no further item or lookup;
+what was not reached waits for the next poll with its state untouched. Events, comments,
+review comments and reviews are read in pages of 100, at most 10 pages. If an item's
+events fill all ten pages the newest are missing, so nothing is decided for that item in
+that poll and a `gap` record says so; a tenth full page of comments adds a `gap` record
+too. An item that was moved to another repository is released as `gone`. The
 search reads one page of 100; more matches produce a `gap` record. The broker's `Feed`
 must allow `/search/issues` (brokers 0.5.0 or later); against an older broker only the
 labels target fails.
@@ -303,7 +325,8 @@ repo) is polled when it is next due, about `every_secs` after its last attempt. 
 webhook.
 
 - **First contact emits nothing.** The first poll of a target records its current position
-  and produces no records. History is never replayed.
+  and produces no records. History is never replayed. The labels target is the exception:
+  items already labelled are mailed on its first poll.
 - **Discord messages.** Each poll reads the latest 50 messages of the channel. If all 50
   are new it pages back, up to 5 pages. If the last position is still not reached it
   appends one `gap` record saying messages may have been skipped, then continues from the
